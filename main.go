@@ -49,7 +49,7 @@ type ptyPipe struct {
 	pty, tty *os.File
 }
 
-type procfileEntry struct {
+type entry struct {
 	Name    string
 	Command string
 	Port    int
@@ -86,18 +86,16 @@ func main() {
 	mgr := &manager{timeout: time.Duration(5) * time.Second}
 	mgr.output = &output{}
 
-	var entries []procfileEntry
-	var f io.Reader
+	var entries []entry
 	file, err := os.Open("./Procfile.dev")
 	check(err)
 	defer file.Close()
-	f = file
 
 	re, _ := regexp.Compile(`^([\w-]+):\s+(.+)$`)
 	port := 5000
 	names := make(map[string]bool)
 
-	err = scanLines(f, func(b []byte) bool {
+	err = scanLines(file, func(b []byte) bool {
 		if len(b) == 0 {
 			return true
 		}
@@ -115,7 +113,7 @@ func main() {
 		}
 		names[name] = true
 
-		entries = append(entries, procfileEntry{name, cmd, port})
+		entries = append(entries, entry{name, cmd, port})
 		port += 100
 
 		return true
@@ -282,18 +280,6 @@ func newProcess(name, command string, color int, port int, output *output) (proc
 	return
 }
 
-func (proc *process) signal(sig os.Signal) {
-	group, err := os.FindProcess(-proc.Process.Pid)
-	if err != nil {
-		proc.output.WriteErr(proc, err)
-		return
-	}
-
-	if err = group.Signal(sig); err != nil {
-		proc.output.WriteErr(proc, err)
-	}
-}
-
 func (proc *process) Running() bool {
 	return proc.Process != nil && proc.ProcessState == nil
 }
@@ -316,6 +302,18 @@ func (proc *process) Interrupt() {
 func (proc *process) Kill() {
 	if proc.Running() {
 		proc.signal(syscall.SIGKILL)
+	}
+}
+
+func (proc *process) signal(sig os.Signal) {
+	group, err := os.FindProcess(-proc.Process.Pid)
+	if err != nil {
+		proc.output.WriteErr(proc, err)
+		return
+	}
+
+	if err = group.Signal(sig); err != nil {
+		proc.output.WriteErr(proc, err)
 	}
 }
 
