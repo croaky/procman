@@ -109,64 +109,60 @@ func main() {
 	app.Run(os.Args)
 }
 
-func ensureKill(p *process) {
-	// p.SysProcAttr.Pdeathsig in supported on on Linux, we can't do anything here
-}
-
-func (h *procman) runProcess(proc *process) {
-	h.procWg.Add(1)
+func (pm *procman) runProcess(proc *process) {
+	pm.procWg.Add(1)
 
 	go func() {
-		defer h.procWg.Done()
-		defer func() { h.done <- true }()
+		defer pm.procWg.Done()
+		defer func() { pm.done <- true }()
 
 		proc.Run()
 	}()
 }
 
-func (h *procman) waitForDoneOrInterrupt() {
+func (pm *procman) waitForDoneOrInterrupt() {
 	select {
-	case <-h.done:
-	case <-h.interrupted:
+	case <-pm.done:
+	case <-pm.interrupted:
 	}
 }
 
-func (h *procman) waitForTimeoutOrInterrupt() {
+func (pm *procman) waitForTimeoutOrInterrupt() {
 	select {
-	case <-time.After(h.timeout):
-	case <-h.interrupted:
+	case <-time.After(pm.timeout):
+	case <-pm.interrupted:
 	}
 }
 
-func (h *procman) waitForExit() {
-	h.waitForDoneOrInterrupt()
+func (pm *procman) waitForExit() {
+	pm.waitForDoneOrInterrupt()
 
-	for _, proc := range h.procs {
+	for _, proc := range pm.procs {
 		go proc.Interrupt()
 	}
 
-	h.waitForTimeoutOrInterrupt()
+	pm.waitForTimeoutOrInterrupt()
 
-	for _, proc := range h.procs {
+	for _, proc := range pm.procs {
 		go proc.Kill()
 	}
 }
 
-func (h *procman) Run() {
-	fmt.Printf("\033]0;%s | procman\007", h.title)
+func (pm *procman) Run() {
+	fmt.Printf("\033]0;%s | procman\007", pm.title)
 
-	h.done = make(chan bool, len(h.procs))
+	pm.done = make(chan bool, len(pm.procs))
 
-	h.interrupted = make(chan os.Signal)
-	signal.Notify(h.interrupted, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	pm.interrupted = make(chan os.Signal)
+	signal.Notify(pm.interrupted, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
-	for _, proc := range h.procs {
-		h.runProcess(proc)
+	for _, proc := range pm.procs {
+		pm.runProcess(proc)
 	}
 
-	go h.waitForExit()
+	go pm.waitForExit()
 
-	h.procWg.Wait()
+	pm.procWg.Wait()
 }
 
 func (m *multiOutput) openPipe(proc *process) (pipe *ptyPipe) {
@@ -278,27 +274,19 @@ func (p *process) Run() {
 	p.output.PipeOutput(p)
 	defer p.output.ClosePipe(p)
 
-	ensureKill(p)
-
-	p.output.WriteLine(p, []byte("\033[1mRunning...\033[0m"))
-
 	if err := p.Cmd.Run(); err != nil {
 		p.output.WriteErr(p, err)
-	} else {
-		p.output.WriteLine(p, []byte("\033[1mProcess exited\033[0m"))
 	}
 }
 
 func (p *process) Interrupt() {
 	if p.Running() {
-		p.output.WriteLine(p, []byte("\033[1mInterrupting...\033[0m"))
 		p.signal(syscall.SIGINT)
 	}
 }
 
 func (p *process) Kill() {
 	if p.Running() {
-		p.output.WriteLine(p, []byte("\033[1mKilling...\033[0m"))
 		p.signal(syscall.SIGKILL)
 	}
 }
