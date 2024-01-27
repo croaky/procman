@@ -156,28 +156,20 @@ func (mgr *manager) runProcess(proc *process) {
 	}()
 }
 
-func (mgr *manager) waitForDoneOrInterrupt() {
+func (mgr *manager) waitForExit() {
 	select {
 	case <-mgr.done:
 	case <-mgr.interrupted:
 	}
-}
-
-func (mgr *manager) waitForTimeoutOrInterrupt() {
-	select {
-	case <-time.After(mgr.timeout):
-	case <-mgr.interrupted:
-	}
-}
-
-func (mgr *manager) waitForExit() {
-	mgr.waitForDoneOrInterrupt()
 
 	for _, proc := range mgr.procs {
 		go proc.Interrupt()
 	}
 
-	mgr.waitForTimeoutOrInterrupt()
+	select {
+	case <-time.After(mgr.timeout):
+	case <-mgr.interrupted:
+	}
 
 	for _, proc := range mgr.procs {
 		go proc.Kill()
