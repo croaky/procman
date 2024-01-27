@@ -20,6 +20,11 @@ import (
 
 var colors = []int{2, 3, 4, 5, 6, 42, 130, 103, 129, 108}
 
+type entry struct {
+	Name string
+	Cmd  string
+}
+
 type manager struct {
 	title       string
 	output      *output
@@ -49,12 +54,6 @@ type ptyPipe struct {
 	pty, tty *os.File
 }
 
-type entry struct {
-	Name    string
-	Command string
-	Port    int
-}
-
 func check(err error) {
 	if err != nil {
 		fmt.Println(err)
@@ -65,7 +64,7 @@ func check(err error) {
 func main() {
 	err := godotenv.Load()
 	if err != nil {
-		fmt.Println("Error loading .env file")
+		fmt.Printf("Error loading .env file: %s\n", err)
 		os.Exit(1)
 	}
 
@@ -86,7 +85,6 @@ func main() {
 	mgr := &manager{timeout: time.Duration(5) * time.Second}
 	mgr.output = &output{}
 
-	var entries []entry
 	file, err := os.Open("./Procfile.dev")
 	check(err)
 	defer file.Close()
@@ -94,6 +92,7 @@ func main() {
 	re, _ := regexp.Compile(`^([\w-]+):\s+(.+)$`)
 	port := 5000
 	names := make(map[string]bool)
+	var entries []entry
 
 	err = scanLines(file, func(b []byte) bool {
 		if len(b) == 0 {
@@ -106,15 +105,12 @@ func main() {
 		}
 
 		name, cmd := params[1], params[2]
-
 		if names[name] {
 			fmt.Printf("Duplicate process name %s in Procfile.dev", name)
 			os.Exit(1)
 		}
 		names[name] = true
-
-		entries = append(entries, entry{name, cmd, port})
-		port += 100
+		entries = append(entries, entry{name, cmd})
 
 		return true
 	})
@@ -127,17 +123,31 @@ func main() {
 
 	mgr.procs = make([]*process, 0)
 
-	for _, name := range procNames {
-		l := len(mgr.procs)
-		for i, entry := range entries {
-			if name == entry.Name {
-				mgr.procs = append(mgr.procs, newProcess(entry.Name, entry.Command, colors[i%len(colors)], entry.Port, mgr.output))
+	for i, name := range procNames {
+		cmd := ""
+		for _, ent := range entries {
+			if name == ent.Name {
+				cmd = ent.Cmd
 			}
 		}
-		if l == len(mgr.procs) {
+		if cmd == "" {
 			fmt.Printf("No process named %s in Procfile.dev\n", name)
 			os.Exit(1)
 		}
+
+		port += 100
+
+		proc := &process{
+			exec.Command("/bin/sh", "-c", cmd),
+			name,
+			colors[i%len(colors)],
+			mgr.output,
+		}
+		proc.Dir = "./"
+		proc.Env = append(os.Environ(), fmt.Sprintf("PORT=%d", port))
+		proc.output.Connect(proc)
+
+		mgr.procs = append(mgr.procs, proc)
 	}
 
 	mgr.Run()
@@ -175,8 +185,6 @@ func (mgr *manager) waitForExit() {
 }
 
 func (mgr *manager) Run() {
-	fmt.Printf("\033]0;%s | procman\007", mgr.title)
-
 	mgr.done = make(chan bool, len(mgr.procs))
 
 	mgr.interrupted = make(chan os.Signal)
@@ -262,22 +270,6 @@ func (out *output) WriteErr(proc *process, err error) {
 	out.WriteLine(proc, []byte(
 		fmt.Sprintf("\033[0;31m%v\033[0m", err),
 	))
-}
-
-func newProcess(name, command string, color int, port int, output *output) (proc *process) {
-	proc = &process{
-		exec.Command("/bin/sh", "-c", command),
-		name,
-		color,
-		output,
-	}
-
-	proc.Dir = "./"
-	proc.Env = append(os.Environ(), fmt.Sprintf("PORT=%d", port))
-
-	proc.output.Connect(proc)
-
-	return
 }
 
 func (proc *process) Running() bool {
