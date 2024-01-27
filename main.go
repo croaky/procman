@@ -145,46 +145,11 @@ func main() {
 		}
 		proc.Dir = "./"
 		proc.Env = append(os.Environ(), fmt.Sprintf("PORT=%d", port))
-		proc.output.Connect(proc)
+		proc.output.connect(proc)
 
 		mgr.procs = append(mgr.procs, proc)
 	}
 
-	mgr.Run()
-}
-
-func (mgr *manager) runProcess(proc *process) {
-	mgr.procWg.Add(1)
-
-	go func() {
-		defer mgr.procWg.Done()
-		defer func() { mgr.done <- true }()
-
-		proc.Run()
-	}()
-}
-
-func (mgr *manager) waitForExit() {
-	select {
-	case <-mgr.done:
-	case <-mgr.interrupted:
-	}
-
-	for _, proc := range mgr.procs {
-		go proc.Interrupt()
-	}
-
-	select {
-	case <-time.After(mgr.timeout):
-	case <-mgr.interrupted:
-	}
-
-	for _, proc := range mgr.procs {
-		go proc.Kill()
-	}
-}
-
-func (mgr *manager) Run() {
 	mgr.done = make(chan bool, len(mgr.procs))
 
 	mgr.interrupted = make(chan os.Signal)
@@ -197,6 +162,37 @@ func (mgr *manager) Run() {
 	go mgr.waitForExit()
 
 	mgr.procWg.Wait()
+}
+
+func (mgr *manager) runProcess(proc *process) {
+	mgr.procWg.Add(1)
+
+	go func() {
+		defer mgr.procWg.Done()
+		defer func() { mgr.done <- true }()
+
+		proc.run()
+	}()
+}
+
+func (mgr *manager) waitForExit() {
+	select {
+	case <-mgr.done:
+	case <-mgr.interrupted:
+	}
+
+	for _, proc := range mgr.procs {
+		go proc.interrupt()
+	}
+
+	select {
+	case <-time.After(mgr.timeout):
+	case <-mgr.interrupted:
+	}
+
+	for _, proc := range mgr.procs {
+		go proc.kill()
+	}
 }
 
 func (out *output) openPipe(proc *process) (pipe *ptyPipe) {
@@ -215,7 +211,7 @@ func (out *output) openPipe(proc *process) (pipe *ptyPipe) {
 	return
 }
 
-func (out *output) Connect(proc *process) {
+func (out *output) connect(proc *process) {
 	if len(proc.Name) > out.maxNameLength {
 		out.maxNameLength = len(proc.Name)
 	}
@@ -227,25 +223,25 @@ func (out *output) Connect(proc *process) {
 	out.pipes[proc] = &ptyPipe{}
 }
 
-func (out *output) PipeOutput(proc *process) {
+func (out *output) pipeOutput(proc *process) {
 	pipe := out.openPipe(proc)
 
 	go func(proc *process, pipe *ptyPipe) {
 		scanLines(pipe.pty, func(b []byte) bool {
-			out.WriteLine(proc, b)
+			out.writeLine(proc, b)
 			return true
 		})
 	}(proc, pipe)
 }
 
-func (out *output) ClosePipe(proc *process) {
+func (out *output) closePipe(proc *process) {
 	if pipe := out.pipes[proc]; pipe != nil {
 		pipe.pty.Close()
 		pipe.tty.Close()
 	}
 }
 
-func (out *output) WriteLine(proc *process, p []byte) {
+func (out *output) writeLine(proc *process, p []byte) {
 	var buf bytes.Buffer
 	color := fmt.Sprintf("\033[1;38;5;%vm", proc.Color)
 
@@ -266,33 +262,33 @@ func (out *output) WriteLine(proc *process, p []byte) {
 	buf.WriteTo(os.Stdout)
 }
 
-func (out *output) WriteErr(proc *process, err error) {
-	out.WriteLine(proc, []byte(
+func (out *output) writeErr(proc *process, err error) {
+	out.writeLine(proc, []byte(
 		fmt.Sprintf("\033[0;31m%v\033[0m", err),
 	))
 }
 
-func (proc *process) Running() bool {
+func (proc *process) running() bool {
 	return proc.Process != nil && proc.ProcessState == nil
 }
 
-func (proc *process) Run() {
-	proc.output.PipeOutput(proc)
-	defer proc.output.ClosePipe(proc)
+func (proc *process) run() {
+	proc.output.pipeOutput(proc)
+	defer proc.output.closePipe(proc)
 
 	if err := proc.Cmd.Run(); err != nil {
-		proc.output.WriteErr(proc, err)
+		proc.output.writeErr(proc, err)
 	}
 }
 
-func (proc *process) Interrupt() {
-	if proc.Running() {
+func (proc *process) interrupt() {
+	if proc.running() {
 		proc.signal(syscall.SIGINT)
 	}
 }
 
-func (proc *process) Kill() {
-	if proc.Running() {
+func (proc *process) kill() {
+	if proc.running() {
 		proc.signal(syscall.SIGKILL)
 	}
 }
@@ -300,12 +296,12 @@ func (proc *process) Kill() {
 func (proc *process) signal(sig os.Signal) {
 	group, err := os.FindProcess(-proc.Process.Pid)
 	if err != nil {
-		proc.output.WriteErr(proc, err)
+		proc.output.writeErr(proc, err)
 		return
 	}
 
 	if err = group.Signal(sig); err != nil {
-		proc.output.WriteErr(proc, err)
+		proc.output.writeErr(proc, err)
 	}
 }
 
