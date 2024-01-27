@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -18,7 +17,6 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/pkg/term/termios"
-	"github.com/urfave/cli"
 )
 
 var colors = []int{2, 3, 4, 5, 6, 42, 130, 103, 129, 108}
@@ -64,49 +62,53 @@ type procfileEntry struct {
 	Port    int
 }
 
+func check(err error) {
+	if err != nil {
+		panic(err)
+	}
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
-		log.Fatal("Error loading .env file")
+		fmt.Println("Error loading .env file")
+		os.Exit(1)
 	}
 
-	var conf config
+	var (
+		conf      config
+		procNames []string
+	)
+	if len(os.Args) < 2 {
+		fmt.Println("No processes listed")
+		os.Exit(1)
+	}
+	split := strings.Split(os.Args[1], ",")
 
-	app := cli.NewApp()
-
-	app.Action = func(c *cli.Context) error {
-		conf.Procfile = "./Procfile.dev"
-		conf.Root, err = filepath.Abs("./")
-		fatalOnErr(err)
-
-		pm := &procman{timeout: time.Duration(5) * time.Second}
-
-		pm.output = &multiOutput{}
-
-		entries := parseProcfile(conf.Procfile, conf.PortBase, conf.PortStep)
-		pm.procs = make([]*process, 0)
-
-		var procNames []string
-		split := strings.Split(c.Args().First(), ",")
-		for _, s := range split {
-			s = strings.Trim(s, " ")
-			if len(s) > 0 {
-				procNames = append(procNames, s)
-			}
+	for _, s := range split {
+		s = strings.Trim(s, " ")
+		if len(s) > 0 {
+			procNames = append(procNames, s)
 		}
-
-		for i, entry := range entries {
-			if len(procNames) == 0 || stringsContain(procNames, entry.Name) {
-				pm.procs = append(pm.procs, newProcess(entry.Name, entry.Command, colors[i%len(colors)], conf.Root, entry.Port, pm.output))
-			}
-		}
-
-		pm.Run()
-
-		return nil
 	}
 
-	app.Run(os.Args)
+	conf.Procfile = "./Procfile.dev"
+	conf.Root, err = filepath.Abs("./")
+	check(err)
+
+	pm := &procman{timeout: time.Duration(5) * time.Second}
+	pm.output = &multiOutput{}
+
+	entries := parseProcfile(conf.Procfile, conf.PortBase, conf.PortStep)
+	pm.procs = make([]*process, 0)
+
+	for i, entry := range entries {
+		if len(procNames) == 0 || stringsContain(procNames, entry.Name) {
+			pm.procs = append(pm.procs, newProcess(entry.Name, entry.Command, colors[i%len(colors)], conf.Root, entry.Port, pm.output))
+		}
+	}
+
+	pm.Run()
 }
 
 func (pm *procman) runProcess(proc *process) {
@@ -171,7 +173,7 @@ func (m *multiOutput) openPipe(proc *process) (pipe *ptyPipe) {
 	pipe = m.pipes[proc]
 
 	pipe.pty, pipe.tty, err = termios.Pty()
-	fatalOnErr(err)
+	check(err)
 
 	proc.Stdout = pipe.tty
 	proc.Stderr = pipe.tty
@@ -298,7 +300,7 @@ func parseProcfile(path string, portBase, portStep int) (entries []procfileEntry
 		f = os.Stdin
 	default:
 		file, err := os.Open(path)
-		fatalOnErr(err)
+		check(err)
 		defer file.Close()
 
 		f = file
@@ -321,7 +323,8 @@ func parseProcfile(path string, portBase, portStep int) (entries []procfileEntry
 		name, cmd := params[1], params[2]
 
 		if names[name] {
-			fatal("Process names must be uniq")
+			fmt.Println("Process names must be uniq")
+			os.Exit(1)
 		}
 		names[name] = true
 
@@ -332,25 +335,14 @@ func parseProcfile(path string, portBase, portStep int) (entries []procfileEntry
 		return true
 	})
 
-	fatalOnErr(err)
+	check(err)
 
 	if len(entries) == 0 {
-		fatal("No entries was found in Procfile")
+		fmt.Println("No entries was found in Procfile")
+		os.Exit(1)
 	}
 
 	return
-}
-
-func fatalOnErr(err error) {
-	if err != nil {
-		fatal(err)
-	}
-}
-
-func fatal(i ...interface{}) {
-	fmt.Fprint(os.Stderr, "procman: ")
-	fmt.Fprintln(os.Stderr, i...)
-	os.Exit(1)
 }
 
 func stringsContain(strs []string, str string) bool {

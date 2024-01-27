@@ -17,13 +17,7 @@ queues: bundle exec ruby queues/poll.rb
 web: bundle exec puma -p 3000 -C ./config/puma.rb
 ```
 
-Run all processes:
-
-```bash
-procman
-```
-
-Run some processes:
+Run multiple processes by naming them in a comma-delimited list:
 
 ```bash
 procman esbuild,web
