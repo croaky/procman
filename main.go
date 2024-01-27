@@ -21,12 +21,11 @@ import (
 var colors = []int{2, 3, 4, 5, 6, 42, 130, 103, 129, 108}
 
 type entry struct {
-	Name string
-	Cmd  string
+	name string
+	cmd  string
 }
 
 type manager struct {
-	title       string
 	output      *output
 	procs       []*process
 	procWg      sync.WaitGroup
@@ -38,9 +37,8 @@ type manager struct {
 type process struct {
 	*exec.Cmd
 
-	Name  string
-	Color int
-
+	name   string
+	color  int
 	output *output
 }
 
@@ -110,7 +108,7 @@ func main() {
 			os.Exit(1)
 		}
 		names[name] = true
-		entries = append(entries, entry{name, cmd})
+		entries = append(entries, entry{name: name, cmd: cmd})
 
 		return true
 	})
@@ -126,8 +124,8 @@ func main() {
 	for i, name := range procNames {
 		cmd := ""
 		for _, ent := range entries {
-			if name == ent.Name {
-				cmd = ent.Cmd
+			if name == ent.name {
+				cmd = ent.cmd
 			}
 		}
 		if cmd == "" {
@@ -138,10 +136,10 @@ func main() {
 		port += 100
 
 		proc := &process{
-			exec.Command("/bin/sh", "-c", cmd),
-			name,
-			colors[i%len(colors)],
-			mgr.output,
+			Cmd:    exec.Command("/bin/sh", "-c", cmd),
+			name:   name,
+			color:  colors[i%len(colors)],
+			output: mgr.output,
 		}
 		proc.Dir = "./"
 		proc.Env = append(os.Environ(), fmt.Sprintf("PORT=%d", port))
@@ -212,8 +210,8 @@ func (out *output) openPipe(proc *process) (pipe *ptyPipe) {
 }
 
 func (out *output) connect(proc *process) {
-	if len(proc.Name) > out.maxNameLength {
-		out.maxNameLength = len(proc.Name)
+	if len(proc.name) > out.maxNameLength {
+		out.maxNameLength = len(proc.name)
 	}
 
 	if out.pipes == nil {
@@ -243,12 +241,12 @@ func (out *output) closePipe(proc *process) {
 
 func (out *output) writeLine(proc *process, p []byte) {
 	var buf bytes.Buffer
-	color := fmt.Sprintf("\033[1;38;5;%vm", proc.Color)
+	color := fmt.Sprintf("\033[1;38;5;%vm", proc.color)
 
 	buf.WriteString(color)
-	buf.WriteString(proc.Name)
+	buf.WriteString(proc.name)
 
-	for i := len(proc.Name); i <= out.maxNameLength; i++ {
+	for i := len(proc.name); i <= out.maxNameLength; i++ {
 		buf.WriteByte(' ')
 	}
 
