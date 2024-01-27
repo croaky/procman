@@ -23,15 +23,13 @@ import (
 
 var colors = []int{2, 3, 4, 5, 6, 42, 130, 103, 129, 108}
 
-type hivemindConfig struct {
+type config struct {
 	Procfile           string
-	ProcNames          string
 	Root               string
 	PortBase, PortStep int
-	Timeout            int
 }
 
-type hivemind struct {
+type procman struct {
 	title       string
 	output      *multiOutput
 	procs       []*process
@@ -72,48 +70,38 @@ func main() {
 		log.Fatal("Error loading .env file")
 	}
 
-	var (
-		conf hivemindConfig
-	)
+	var conf config
 
 	app := cli.NewApp()
 
-	app.ArgsUsage = "[procfile] (Use '-' to read from stdin, Procfile path can be also set with $HIVEMIND_PROCFILE)"
-
-	app.Flags = []cli.Flag{
-		cli.StringFlag{Name: "processes, l", EnvVar: "HIVEMIND_PROCESSES", Usage: "Specify process names to launch. Divide names with comma", Destination: &conf.ProcNames},
-		cli.IntFlag{Name: "port, p", EnvVar: "HIVEMIND_PORT,PORT", Usage: "specify a port to use as the base", Value: 5000, Destination: &conf.PortBase},
-		cli.IntFlag{Name: "port-step, P", EnvVar: "HIVEMIND_PORT_STEP", Usage: "specify a step to increase port number", Value: 100, Destination: &conf.PortStep},
-		cli.StringFlag{Name: "root, d", EnvVar: "HIVEMIND_ROOT", Usage: "specify a working directory of application. Default: directory containing the Procfile", Destination: &conf.Root},
-		cli.IntFlag{Name: "timeout, t", EnvVar: "HIVEMIND_TIMEOUT", Usage: "specify the amount of time (in seconds) processes have to shut down gracefully before being brutally killed", Value: 5, Destination: &conf.Timeout},
-	}
-
 	app.Action = func(c *cli.Context) error {
-		switch c.NArg() {
-		case 0:
-			if path := os.Getenv("HIVEMIND_PROCFILE"); len(path) > 0 {
-				conf.Procfile = path
-			} else {
-				conf.Procfile = "./Procfile"
-			}
-		case 1:
-			conf.Procfile = c.Args().First()
-		default:
-			fatal("Specify a single procfile")
-		}
-
-		if conf.Timeout < 1 {
-			fatal("Timeout should be greater than 0")
-		}
-
-		if len(conf.Root) == 0 {
-			conf.Root = filepath.Dir(conf.Procfile)
-		}
-
-		conf.Root, err = filepath.Abs(conf.Root)
+		conf.Procfile = "./Procfile.dev"
+		conf.Root, err = filepath.Abs("./")
 		fatalOnErr(err)
 
-		newHivemind(conf).Run()
+		pm := &procman{timeout: time.Duration(5) * time.Second}
+
+		pm.output = &multiOutput{}
+
+		entries := parseProcfile(conf.Procfile, conf.PortBase, conf.PortStep)
+		pm.procs = make([]*process, 0)
+
+		var procNames []string
+		split := strings.Split(c.Args().First(), ",")
+		for _, s := range split {
+			s = strings.Trim(s, " ")
+			if len(s) > 0 {
+				procNames = append(procNames, s)
+			}
+		}
+
+		for i, entry := range entries {
+			if len(procNames) == 0 || stringsContain(procNames, entry.Name) {
+				pm.procs = append(pm.procs, newProcess(entry.Name, entry.Command, colors[i%len(colors)], conf.Root, entry.Port, pm.output))
+			}
+		}
+
+		pm.Run()
 
 		return nil
 	}
@@ -125,26 +113,7 @@ func ensureKill(p *process) {
 	// p.SysProcAttr.Pdeathsig in supported on on Linux, we can't do anything here
 }
 
-func newHivemind(conf hivemindConfig) (h *hivemind) {
-	h = &hivemind{timeout: time.Duration(conf.Timeout) * time.Second}
-
-	h.output = &multiOutput{}
-
-	entries := parseProcfile(conf.Procfile, conf.PortBase, conf.PortStep)
-	h.procs = make([]*process, 0)
-
-	procNames := splitAndTrim(conf.ProcNames)
-
-	for i, entry := range entries {
-		if len(procNames) == 0 || stringsContain(procNames, entry.Name) {
-			h.procs = append(h.procs, newProcess(entry.Name, entry.Command, colors[i%len(colors)], conf.Root, entry.Port, h.output))
-		}
-	}
-
-	return
-}
-
-func (h *hivemind) runProcess(proc *process) {
+func (h *procman) runProcess(proc *process) {
 	h.procWg.Add(1)
 
 	go func() {
@@ -155,21 +124,21 @@ func (h *hivemind) runProcess(proc *process) {
 	}()
 }
 
-func (h *hivemind) waitForDoneOrInterrupt() {
+func (h *procman) waitForDoneOrInterrupt() {
 	select {
 	case <-h.done:
 	case <-h.interrupted:
 	}
 }
 
-func (h *hivemind) waitForTimeoutOrInterrupt() {
+func (h *procman) waitForTimeoutOrInterrupt() {
 	select {
 	case <-time.After(h.timeout):
 	case <-h.interrupted:
 	}
 }
 
-func (h *hivemind) waitForExit() {
+func (h *procman) waitForExit() {
 	h.waitForDoneOrInterrupt()
 
 	for _, proc := range h.procs {
@@ -183,8 +152,8 @@ func (h *hivemind) waitForExit() {
 	}
 }
 
-func (h *hivemind) Run() {
-	fmt.Printf("\033]0;%s | hivemind\007", h.title)
+func (h *procman) Run() {
+	fmt.Printf("\033]0;%s | procman\007", h.title)
 
 	h.done = make(chan bool, len(h.procs))
 
@@ -289,19 +258,15 @@ func newProcess(name, command string, color int, root string, port int, output *
 	return
 }
 
-func (p *process) writeErr(err error) {
-	p.output.WriteErr(p, err)
-}
-
 func (p *process) signal(sig os.Signal) {
 	group, err := os.FindProcess(-p.Process.Pid)
 	if err != nil {
-		p.writeErr(err)
+		p.output.WriteErr(p, err)
 		return
 	}
 
 	if err = group.Signal(sig); err != nil {
-		p.writeErr(err)
+		p.output.WriteErr(p, err)
 	}
 }
 
@@ -318,7 +283,7 @@ func (p *process) Run() {
 	p.output.WriteLine(p, []byte("\033[1mRunning...\033[0m"))
 
 	if err := p.Cmd.Run(); err != nil {
-		p.writeErr(err)
+		p.output.WriteErr(p, err)
 	} else {
 		p.output.WriteLine(p, []byte("\033[1mProcess exited\033[0m"))
 	}
@@ -395,20 +360,9 @@ func fatalOnErr(err error) {
 }
 
 func fatal(i ...interface{}) {
-	fmt.Fprint(os.Stderr, "hivemind: ")
+	fmt.Fprint(os.Stderr, "procman: ")
 	fmt.Fprintln(os.Stderr, i...)
 	os.Exit(1)
-}
-
-func splitAndTrim(str string) (res []string) {
-	split := strings.Split(str, ",")
-	for _, s := range split {
-		s = strings.Trim(s, " ")
-		if len(s) > 0 {
-			res = append(res, s)
-		}
-	}
-	return
 }
 
 func stringsContain(strs []string, str string) bool {
