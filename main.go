@@ -21,6 +21,54 @@ import (
 	"github.com/urfave/cli"
 )
 
+type hivemindConfig struct {
+	Title              string
+	Procfile           string
+	ProcNames          string
+	Root               string
+	PortBase, PortStep int
+	Timeout            int
+	NoPrefix           bool
+	PrintTimestamps    bool
+}
+
+type hivemind struct {
+	title       string
+	output      *multiOutput
+	procs       []*process
+	procWg      sync.WaitGroup
+	done        chan bool
+	interrupted chan os.Signal
+	timeout     time.Duration
+}
+
+type ptyPipe struct {
+	pty, tty *os.File
+}
+
+type multiOutput struct {
+	maxNameLength  int
+	mutex          sync.Mutex
+	pipes          map[*process]*ptyPipe
+	printProcName  bool
+	printTimestamp bool
+}
+
+type process struct {
+	*exec.Cmd
+
+	Name  string
+	Color int
+
+	output *multiOutput
+}
+
+type procfileEntry struct {
+	Name    string
+	Command string
+	Port    int
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -33,14 +81,7 @@ func main() {
 
 	app := cli.NewApp()
 
-	app.Name = "Hivemind"
-	app.HelpName = "hivemind"
-	app.Usage = "The mind to rule processes of your development environment"
-	app.Description = "Hivemind is a process manager for Procfile-based applications"
-	app.Author = "Sergey \"DarthSim\" Alexandrovich"
-	app.Email = "darthsim@gmail.com"
 	app.ArgsUsage = "[procfile] (Use '-' to read from stdin, Procfile path can be also set with $HIVEMIND_PROCFILE)"
-	app.HideHelp = true
 
 	app.Flags = []cli.Flag{
 		cli.StringFlag{Name: "title, w", EnvVar: "HIVEMIND_TITLE", Usage: "Specify a title of the application", Destination: &conf.Title},
@@ -91,27 +132,6 @@ func ensureKill(p *process) {
 }
 
 var colors = []int{2, 3, 4, 5, 6, 42, 130, 103, 129, 108}
-
-type hivemindConfig struct {
-	Title              string
-	Procfile           string
-	ProcNames          string
-	Root               string
-	PortBase, PortStep int
-	Timeout            int
-	NoPrefix           bool
-	PrintTimestamps    bool
-}
-
-type hivemind struct {
-	title       string
-	output      *multiOutput
-	procs       []*process
-	procWg      sync.WaitGroup
-	done        chan bool
-	interrupted chan os.Signal
-	timeout     time.Duration
-}
 
 func newHivemind(conf hivemindConfig) (h *hivemind) {
 	h = &hivemind{timeout: time.Duration(conf.Timeout) * time.Second}
@@ -192,18 +212,6 @@ func (h *hivemind) Run() {
 	go h.waitForExit()
 
 	h.procWg.Wait()
-}
-
-type ptyPipe struct {
-	pty, tty *os.File
-}
-
-type multiOutput struct {
-	maxNameLength  int
-	mutex          sync.Mutex
-	pipes          map[*process]*ptyPipe
-	printProcName  bool
-	printTimestamp bool
 }
 
 func (m *multiOutput) openPipe(proc *process) (pipe *ptyPipe) {
@@ -291,15 +299,6 @@ func (m *multiOutput) WriteErr(proc *process, err error) {
 	))
 }
 
-type process struct {
-	*exec.Cmd
-
-	Name  string
-	Color int
-
-	output *multiOutput
-}
-
 func newProcess(name, command string, color int, root string, port int, output *multiOutput) (proc *process) {
 	proc = &process{
 		exec.Command("/bin/sh", "-c", command),
@@ -367,12 +366,6 @@ func (p *process) Kill() {
 		p.writeLine([]byte("\033[1mKilling...\033[0m"))
 		p.signal(syscall.SIGKILL)
 	}
-}
-
-type procfileEntry struct {
-	Name    string
-	Command string
-	Port    int
 }
 
 func parseProcfile(path string, portBase, portStep int) (entries []procfileEntry) {
