@@ -21,15 +21,14 @@ import (
 	"github.com/urfave/cli"
 )
 
+var colors = []int{2, 3, 4, 5, 6, 42, 130, 103, 129, 108}
+
 type hivemindConfig struct {
-	Title              string
 	Procfile           string
 	ProcNames          string
 	Root               string
 	PortBase, PortStep int
 	Timeout            int
-	NoPrefix           bool
-	PrintTimestamps    bool
 }
 
 type hivemind struct {
@@ -47,11 +46,9 @@ type ptyPipe struct {
 }
 
 type multiOutput struct {
-	maxNameLength  int
-	mutex          sync.Mutex
-	pipes          map[*process]*ptyPipe
-	printProcName  bool
-	printTimestamp bool
+	maxNameLength int
+	mutex         sync.Mutex
+	pipes         map[*process]*ptyPipe
 }
 
 type process struct {
@@ -84,14 +81,11 @@ func main() {
 	app.ArgsUsage = "[procfile] (Use '-' to read from stdin, Procfile path can be also set with $HIVEMIND_PROCFILE)"
 
 	app.Flags = []cli.Flag{
-		cli.StringFlag{Name: "title, w", EnvVar: "HIVEMIND_TITLE", Usage: "Specify a title of the application", Destination: &conf.Title},
 		cli.StringFlag{Name: "processes, l", EnvVar: "HIVEMIND_PROCESSES", Usage: "Specify process names to launch. Divide names with comma", Destination: &conf.ProcNames},
 		cli.IntFlag{Name: "port, p", EnvVar: "HIVEMIND_PORT,PORT", Usage: "specify a port to use as the base", Value: 5000, Destination: &conf.PortBase},
 		cli.IntFlag{Name: "port-step, P", EnvVar: "HIVEMIND_PORT_STEP", Usage: "specify a step to increase port number", Value: 100, Destination: &conf.PortStep},
 		cli.StringFlag{Name: "root, d", EnvVar: "HIVEMIND_ROOT", Usage: "specify a working directory of application. Default: directory containing the Procfile", Destination: &conf.Root},
 		cli.IntFlag{Name: "timeout, t", EnvVar: "HIVEMIND_TIMEOUT", Usage: "specify the amount of time (in seconds) processes have to shut down gracefully before being brutally killed", Value: 5, Destination: &conf.Timeout},
-		cli.BoolFlag{Name: "no-prefix", EnvVar: "HIVEMIND_NO_PREFIX", Usage: "process names will not be printed if the flag is specified", Destination: &conf.NoPrefix},
-		cli.BoolFlag{Name: "print-timestamps, T", EnvVar: "HIVEMIND_PRINT_TIMESTAMPS", Usage: "timestamps will be printed if the flag is specified", Destination: &conf.PrintTimestamps},
 	}
 
 	app.Action = func(c *cli.Context) error {
@@ -131,18 +125,10 @@ func ensureKill(p *process) {
 	// p.SysProcAttr.Pdeathsig in supported on on Linux, we can't do anything here
 }
 
-var colors = []int{2, 3, 4, 5, 6, 42, 130, 103, 129, 108}
-
 func newHivemind(conf hivemindConfig) (h *hivemind) {
 	h = &hivemind{timeout: time.Duration(conf.Timeout) * time.Second}
 
-	if len(conf.Title) > 0 {
-		h.title = conf.Title
-	} else {
-		h.title = filepath.Base(conf.Root)
-	}
-
-	h.output = &multiOutput{printProcName: !conf.NoPrefix, printTimestamp: conf.PrintTimestamps}
+	h.output = &multiOutput{}
 
 	entries := parseProcfile(conf.Procfile, conf.PortBase, conf.PortStep)
 	h.procs = make([]*process, 0)
@@ -262,28 +248,16 @@ func (m *multiOutput) ClosePipe(proc *process) {
 
 func (m *multiOutput) WriteLine(proc *process, p []byte) {
 	var buf bytes.Buffer
+	color := fmt.Sprintf("\033[1;38;5;%vm", proc.Color)
 
-	if m.printProcName || m.printTimestamp {
-		color := fmt.Sprintf("\033[1;38;5;%vm", proc.Color)
+	buf.WriteString(color)
+	buf.WriteString(proc.Name)
 
-		buf.WriteString(color)
-
-		if m.printTimestamp {
-			buf.WriteString(time.Now().Format("15:04:05"))
-			buf.WriteByte(' ')
-		}
-
-		if m.printProcName {
-			buf.WriteString(proc.Name)
-
-			for i := len(proc.Name); i <= m.maxNameLength; i++ {
-				buf.WriteByte(' ')
-			}
-		}
-
-		buf.WriteString("\033[0m| ")
+	for i := len(proc.Name); i <= m.maxNameLength; i++ {
+		buf.WriteByte(' ')
 	}
 
+	buf.WriteString("\033[0m| ")
 	buf.Write(p)
 	buf.WriteByte('\n')
 
@@ -315,10 +289,6 @@ func newProcess(name, command string, color int, root string, port int, output *
 	return
 }
 
-func (p *process) writeLine(b []byte) {
-	p.output.WriteLine(p, b)
-}
-
 func (p *process) writeErr(err error) {
 	p.output.WriteErr(p, err)
 }
@@ -345,25 +315,25 @@ func (p *process) Run() {
 
 	ensureKill(p)
 
-	p.writeLine([]byte("\033[1mRunning...\033[0m"))
+	p.output.WriteLine(p, []byte("\033[1mRunning...\033[0m"))
 
 	if err := p.Cmd.Run(); err != nil {
 		p.writeErr(err)
 	} else {
-		p.writeLine([]byte("\033[1mProcess exited\033[0m"))
+		p.output.WriteLine(p, []byte("\033[1mProcess exited\033[0m"))
 	}
 }
 
 func (p *process) Interrupt() {
 	if p.Running() {
-		p.writeLine([]byte("\033[1mInterrupting...\033[0m"))
+		p.output.WriteLine(p, []byte("\033[1mInterrupting...\033[0m"))
 		p.signal(syscall.SIGINT)
 	}
 }
 
 func (p *process) Kill() {
 	if p.Running() {
-		p.writeLine([]byte("\033[1mKilling...\033[0m"))
+		p.output.WriteLine(p, []byte("\033[1mKilling...\033[0m"))
 		p.signal(syscall.SIGKILL)
 	}
 }
