@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -21,30 +20,14 @@ import (
 
 var colors = []int{2, 3, 4, 5, 6, 42, 130, 103, 129, 108}
 
-type config struct {
-	Procfile           string
-	Root               string
-	PortBase, PortStep int
-}
-
-type procman struct {
+type manager struct {
 	title       string
-	output      *multiOutput
+	output      *output
 	procs       []*process
 	procWg      sync.WaitGroup
 	done        chan bool
 	interrupted chan os.Signal
 	timeout     time.Duration
-}
-
-type ptyPipe struct {
-	pty, tty *os.File
-}
-
-type multiOutput struct {
-	maxNameLength int
-	mutex         sync.Mutex
-	pipes         map[*process]*ptyPipe
 }
 
 type process struct {
@@ -53,7 +36,17 @@ type process struct {
 	Name  string
 	Color int
 
-	output *multiOutput
+	output *output
+}
+
+type output struct {
+	maxNameLength int
+	mutex         sync.Mutex
+	pipes         map[*process]*ptyPipe
+}
+
+type ptyPipe struct {
+	pty, tty *os.File
 }
 
 type procfileEntry struct {
@@ -64,7 +57,8 @@ type procfileEntry struct {
 
 func check(err error) {
 	if err != nil {
-		panic(err)
+		fmt.Println(err)
+		os.Exit(1)
 	}
 }
 
@@ -75,14 +69,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	var (
-		conf      config
-		procNames []string
-	)
 	if len(os.Args) < 2 {
-		fmt.Println("No processes listed")
+		fmt.Println("No processes given as arguments")
 		os.Exit(1)
 	}
+	var procNames []string
 	split := strings.Split(os.Args[1], ",")
 
 	for _, s := range split {
@@ -92,225 +83,21 @@ func main() {
 		}
 	}
 
-	conf.Procfile = "./Procfile.dev"
-	conf.Root, err = filepath.Abs("./")
-	check(err)
+	mgr := &manager{timeout: time.Duration(5) * time.Second}
+	mgr.output = &output{}
 
-	pm := &procman{timeout: time.Duration(5) * time.Second}
-	pm.output = &multiOutput{}
-
-	entries := parseProcfile(conf.Procfile, conf.PortBase, conf.PortStep)
-	pm.procs = make([]*process, 0)
-
-	for i, entry := range entries {
-		if len(procNames) == 0 || stringsContain(procNames, entry.Name) {
-			pm.procs = append(pm.procs, newProcess(entry.Name, entry.Command, colors[i%len(colors)], conf.Root, entry.Port, pm.output))
-		}
-	}
-
-	pm.Run()
-}
-
-func (pm *procman) runProcess(proc *process) {
-	pm.procWg.Add(1)
-
-	go func() {
-		defer pm.procWg.Done()
-		defer func() { pm.done <- true }()
-
-		proc.Run()
-	}()
-}
-
-func (pm *procman) waitForDoneOrInterrupt() {
-	select {
-	case <-pm.done:
-	case <-pm.interrupted:
-	}
-}
-
-func (pm *procman) waitForTimeoutOrInterrupt() {
-	select {
-	case <-time.After(pm.timeout):
-	case <-pm.interrupted:
-	}
-}
-
-func (pm *procman) waitForExit() {
-	pm.waitForDoneOrInterrupt()
-
-	for _, proc := range pm.procs {
-		go proc.Interrupt()
-	}
-
-	pm.waitForTimeoutOrInterrupt()
-
-	for _, proc := range pm.procs {
-		go proc.Kill()
-	}
-}
-
-func (pm *procman) Run() {
-	fmt.Printf("\033]0;%s | procman\007", pm.title)
-
-	pm.done = make(chan bool, len(pm.procs))
-
-	pm.interrupted = make(chan os.Signal)
-	signal.Notify(pm.interrupted, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-
-	for _, proc := range pm.procs {
-		pm.runProcess(proc)
-	}
-
-	go pm.waitForExit()
-
-	pm.procWg.Wait()
-}
-
-func (m *multiOutput) openPipe(proc *process) (pipe *ptyPipe) {
-	var err error
-
-	pipe = m.pipes[proc]
-
-	pipe.pty, pipe.tty, err = termios.Pty()
-	check(err)
-
-	proc.Stdout = pipe.tty
-	proc.Stderr = pipe.tty
-	proc.Stdin = pipe.tty
-	proc.SysProcAttr = &syscall.SysProcAttr{Setctty: true, Setsid: true}
-
-	return
-}
-
-func (m *multiOutput) Connect(proc *process) {
-	if len(proc.Name) > m.maxNameLength {
-		m.maxNameLength = len(proc.Name)
-	}
-
-	if m.pipes == nil {
-		m.pipes = make(map[*process]*ptyPipe)
-	}
-
-	m.pipes[proc] = &ptyPipe{}
-}
-
-func (m *multiOutput) PipeOutput(proc *process) {
-	pipe := m.openPipe(proc)
-
-	go func(proc *process, pipe *ptyPipe) {
-		scanLines(pipe.pty, func(b []byte) bool {
-			m.WriteLine(proc, b)
-			return true
-		})
-	}(proc, pipe)
-}
-
-func (m *multiOutput) ClosePipe(proc *process) {
-	if pipe := m.pipes[proc]; pipe != nil {
-		pipe.pty.Close()
-		pipe.tty.Close()
-	}
-}
-
-func (m *multiOutput) WriteLine(proc *process, p []byte) {
-	var buf bytes.Buffer
-	color := fmt.Sprintf("\033[1;38;5;%vm", proc.Color)
-
-	buf.WriteString(color)
-	buf.WriteString(proc.Name)
-
-	for i := len(proc.Name); i <= m.maxNameLength; i++ {
-		buf.WriteByte(' ')
-	}
-
-	buf.WriteString("\033[0m| ")
-	buf.Write(p)
-	buf.WriteByte('\n')
-
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
-	buf.WriteTo(os.Stdout)
-}
-
-func (m *multiOutput) WriteErr(proc *process, err error) {
-	m.WriteLine(proc, []byte(
-		fmt.Sprintf("\033[0;31m%v\033[0m", err),
-	))
-}
-
-func newProcess(name, command string, color int, root string, port int, output *multiOutput) (proc *process) {
-	proc = &process{
-		exec.Command("/bin/sh", "-c", command),
-		name,
-		color,
-		output,
-	}
-
-	proc.Dir = root
-	proc.Env = append(os.Environ(), fmt.Sprintf("PORT=%d", port))
-
-	proc.output.Connect(proc)
-
-	return
-}
-
-func (p *process) signal(sig os.Signal) {
-	group, err := os.FindProcess(-p.Process.Pid)
-	if err != nil {
-		p.output.WriteErr(p, err)
-		return
-	}
-
-	if err = group.Signal(sig); err != nil {
-		p.output.WriteErr(p, err)
-	}
-}
-
-func (p *process) Running() bool {
-	return p.Process != nil && p.ProcessState == nil
-}
-
-func (p *process) Run() {
-	p.output.PipeOutput(p)
-	defer p.output.ClosePipe(p)
-
-	if err := p.Cmd.Run(); err != nil {
-		p.output.WriteErr(p, err)
-	}
-}
-
-func (p *process) Interrupt() {
-	if p.Running() {
-		p.signal(syscall.SIGINT)
-	}
-}
-
-func (p *process) Kill() {
-	if p.Running() {
-		p.signal(syscall.SIGKILL)
-	}
-}
-
-func parseProcfile(path string, portBase, portStep int) (entries []procfileEntry) {
+	var entries []procfileEntry
 	var f io.Reader
-	switch path {
-	case "-":
-		f = os.Stdin
-	default:
-		file, err := os.Open(path)
-		check(err)
-		defer file.Close()
-
-		f = file
-	}
+	file, err := os.Open("./Procfile.dev")
+	check(err)
+	defer file.Close()
+	f = file
 
 	re, _ := regexp.Compile(`^([\w-]+):\s+(.+)$`)
-	port := portBase
+	port := 5000
 	names := make(map[string]bool)
 
-	err := scanLines(f, func(b []byte) bool {
+	err = scanLines(f, func(b []byte) bool {
 		if len(b) == 0 {
 			return true
 		}
@@ -323,35 +110,221 @@ func parseProcfile(path string, portBase, portStep int) (entries []procfileEntry
 		name, cmd := params[1], params[2]
 
 		if names[name] {
-			fmt.Println("Process names must be uniq")
+			fmt.Printf("Duplicate process name %s in Procfile.dev", name)
 			os.Exit(1)
 		}
 		names[name] = true
 
 		entries = append(entries, procfileEntry{name, cmd, port})
-
-		port += portStep
+		port += 100
 
 		return true
 	})
-
 	check(err)
 
 	if len(entries) == 0 {
-		fmt.Println("No entries was found in Procfile")
+		fmt.Println("No entries found in Procfile.dev")
 		os.Exit(1)
 	}
+
+	mgr.procs = make([]*process, 0)
+
+	for _, name := range procNames {
+		l := len(mgr.procs)
+		for i, entry := range entries {
+			if name == entry.Name {
+				mgr.procs = append(mgr.procs, newProcess(entry.Name, entry.Command, colors[i%len(colors)], entry.Port, mgr.output))
+			}
+		}
+		if l == len(mgr.procs) {
+			fmt.Printf("No process named %s in Procfile.dev\n", name)
+			os.Exit(1)
+		}
+	}
+
+	mgr.Run()
+}
+
+func (mgr *manager) runProcess(proc *process) {
+	mgr.procWg.Add(1)
+
+	go func() {
+		defer mgr.procWg.Done()
+		defer func() { mgr.done <- true }()
+
+		proc.Run()
+	}()
+}
+
+func (mgr *manager) waitForDoneOrInterrupt() {
+	select {
+	case <-mgr.done:
+	case <-mgr.interrupted:
+	}
+}
+
+func (mgr *manager) waitForTimeoutOrInterrupt() {
+	select {
+	case <-time.After(mgr.timeout):
+	case <-mgr.interrupted:
+	}
+}
+
+func (mgr *manager) waitForExit() {
+	mgr.waitForDoneOrInterrupt()
+
+	for _, proc := range mgr.procs {
+		go proc.Interrupt()
+	}
+
+	mgr.waitForTimeoutOrInterrupt()
+
+	for _, proc := range mgr.procs {
+		go proc.Kill()
+	}
+}
+
+func (mgr *manager) Run() {
+	fmt.Printf("\033]0;%s | procman\007", mgr.title)
+
+	mgr.done = make(chan bool, len(mgr.procs))
+
+	mgr.interrupted = make(chan os.Signal)
+	signal.Notify(mgr.interrupted, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+
+	for _, proc := range mgr.procs {
+		mgr.runProcess(proc)
+	}
+
+	go mgr.waitForExit()
+
+	mgr.procWg.Wait()
+}
+
+func (out *output) openPipe(proc *process) (pipe *ptyPipe) {
+	var err error
+
+	pipe = out.pipes[proc]
+
+	pipe.pty, pipe.tty, err = termios.Pty()
+	check(err)
+
+	proc.Stdout = pipe.tty
+	proc.Stderr = pipe.tty
+	proc.Stdin = pipe.tty
+	proc.SysProcAttr = &syscall.SysProcAttr{Setctty: true, Setsid: true}
 
 	return
 }
 
-func stringsContain(strs []string, str string) bool {
-	for _, s := range strs {
-		if s == str {
-			return true
-		}
+func (out *output) Connect(proc *process) {
+	if len(proc.Name) > out.maxNameLength {
+		out.maxNameLength = len(proc.Name)
 	}
-	return false
+
+	if out.pipes == nil {
+		out.pipes = make(map[*process]*ptyPipe)
+	}
+
+	out.pipes[proc] = &ptyPipe{}
+}
+
+func (out *output) PipeOutput(proc *process) {
+	pipe := out.openPipe(proc)
+
+	go func(proc *process, pipe *ptyPipe) {
+		scanLines(pipe.pty, func(b []byte) bool {
+			out.WriteLine(proc, b)
+			return true
+		})
+	}(proc, pipe)
+}
+
+func (out *output) ClosePipe(proc *process) {
+	if pipe := out.pipes[proc]; pipe != nil {
+		pipe.pty.Close()
+		pipe.tty.Close()
+	}
+}
+
+func (out *output) WriteLine(proc *process, p []byte) {
+	var buf bytes.Buffer
+	color := fmt.Sprintf("\033[1;38;5;%vm", proc.Color)
+
+	buf.WriteString(color)
+	buf.WriteString(proc.Name)
+
+	for i := len(proc.Name); i <= out.maxNameLength; i++ {
+		buf.WriteByte(' ')
+	}
+
+	buf.WriteString("\033[0m| ")
+	buf.Write(p)
+	buf.WriteByte('\n')
+
+	out.mutex.Lock()
+	defer out.mutex.Unlock()
+
+	buf.WriteTo(os.Stdout)
+}
+
+func (out *output) WriteErr(proc *process, err error) {
+	out.WriteLine(proc, []byte(
+		fmt.Sprintf("\033[0;31m%v\033[0m", err),
+	))
+}
+
+func newProcess(name, command string, color int, port int, output *output) (proc *process) {
+	proc = &process{
+		exec.Command("/bin/sh", "-c", command),
+		name,
+		color,
+		output,
+	}
+
+	proc.Dir = "./"
+	proc.Env = append(os.Environ(), fmt.Sprintf("PORT=%d", port))
+
+	proc.output.Connect(proc)
+
+	return
+}
+
+func (proc *process) signal(sig os.Signal) {
+	group, err := os.FindProcess(-proc.Process.Pid)
+	if err != nil {
+		proc.output.WriteErr(proc, err)
+		return
+	}
+
+	if err = group.Signal(sig); err != nil {
+		proc.output.WriteErr(proc, err)
+	}
+}
+
+func (proc *process) Running() bool {
+	return proc.Process != nil && proc.ProcessState == nil
+}
+
+func (proc *process) Run() {
+	proc.output.PipeOutput(proc)
+	defer proc.output.ClosePipe(proc)
+
+	if err := proc.Cmd.Run(); err != nil {
+		proc.output.WriteErr(proc, err)
+	}
+}
+
+func (proc *process) Interrupt() {
+	if proc.Running() {
+		proc.signal(syscall.SIGINT)
+	}
+}
+
+func (proc *process) Kill() {
+	if proc.Running() {
+		proc.signal(syscall.SIGKILL)
+	}
 }
 
 func scanLines(r io.Reader, callback func([]byte) bool) error {
