@@ -17,7 +17,10 @@ import (
 	"github.com/pkg/term/termios"
 )
 
-var colors = []int{2, 3, 4, 5, 6, 42, 130, 103, 129, 108}
+var (
+	colors = []int{2, 3, 4, 5, 6, 42, 130, 103, 129, 108}
+	port   = 5000
+)
 
 type entry struct {
 	name string
@@ -81,7 +84,6 @@ func main() {
 	defer file.Close()
 
 	re, _ := regexp.Compile(`^([\w-]+):\s+(.+)$`)
-	port := 5000
 	names := make(map[string]bool)
 	var entries []entry
 
