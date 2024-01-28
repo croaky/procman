@@ -23,11 +23,13 @@ var (
 	timeout  = time.Duration(5) * time.Second
 )
 
+// entry represents a single line in the procfile, with a name and command
 type entry struct {
 	name string
 	cmd  string
 }
 
+// manager handles overall process management
 type manager struct {
 	output      *output
 	procs       []*process
@@ -36,6 +38,7 @@ type manager struct {
 	interrupted chan os.Signal
 }
 
+// process represents an individual process to be managed
 type process struct {
 	*exec.Cmd
 
@@ -44,16 +47,19 @@ type process struct {
 	output *output
 }
 
+// output manages the output display of processes
 type output struct {
 	maxNameLength int
 	mutex         sync.Mutex
 	pipes         map[*process]*ptyPipe
 }
 
+// ptyPipe is used for managing pseudo-terminal (PTY) devices
 type ptyPipe struct {
 	pty, tty *os.File
 }
 
+// check checks for an error and exits the program if an error is found
 func check(err error) {
 	if err != nil {
 		fmt.Println(err)
@@ -62,18 +68,10 @@ func check(err error) {
 }
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("No processes given as arguments")
+	procNames, err := parseArgs(os.Args)
+	if err != nil {
+		fmt.Println(err)
 		os.Exit(1)
-	}
-	var procNames []string
-	split := strings.Split(os.Args[1], ",")
-
-	for _, s := range split {
-		s = strings.Trim(s, " ")
-		if len(s) > 0 {
-			procNames = append(procNames, s)
-		}
 	}
 
 	mgr := &manager{}
@@ -153,6 +151,55 @@ func main() {
 	mgr.procWg.Wait()
 }
 
+// parseArgs parses command-line arguments and returns a list of process names.
+func parseArgs(args []string) ([]string, error) {
+	if len(args) < 2 {
+		return nil, fmt.Errorf("no processes given as arguments")
+	}
+	var procNames []string
+	split := strings.Split(args[1], ",")
+	for _, s := range split {
+		s = strings.Trim(s, " ")
+		if len(s) > 0 {
+			procNames = append(procNames, s)
+		}
+	}
+	return procNames, nil
+}
+
+// scanLines reads lines from an input reader and applies a callback function to
+// each line. It is used for processing the contents of the procfile.
+func scanLines(r io.Reader, callback func([]byte) bool) error {
+	var (
+		err      error
+		line     []byte
+		isPrefix bool
+	)
+
+	reader := bufio.NewReader(r)
+	buf := new(bytes.Buffer)
+
+	for {
+		line, isPrefix, err = reader.ReadLine()
+		if err != nil {
+			break
+		}
+
+		buf.Write(line)
+
+		if !isPrefix {
+			if !callback(buf.Bytes()) {
+				return nil
+			}
+			buf.Reset()
+		}
+	}
+	if err != io.EOF && err != io.ErrClosedPipe {
+		return err
+	}
+	return nil
+}
+
 func (mgr *manager) runProcess(proc *process) {
 	mgr.procWg.Add(1)
 
@@ -219,37 +266,6 @@ func (proc *process) signal(sig os.Signal) {
 	if err = group.Signal(sig); err != nil {
 		proc.output.writeErr(proc, err)
 	}
-}
-
-func scanLines(r io.Reader, callback func([]byte) bool) error {
-	var (
-		err      error
-		line     []byte
-		isPrefix bool
-	)
-
-	reader := bufio.NewReader(r)
-	buf := new(bytes.Buffer)
-
-	for {
-		line, isPrefix, err = reader.ReadLine()
-		if err != nil {
-			break
-		}
-
-		buf.Write(line)
-
-		if !isPrefix {
-			if !callback(buf.Bytes()) {
-				return nil
-			}
-			buf.Reset()
-		}
-	}
-	if err != io.EOF && err != io.ErrClosedPipe {
-		return err
-	}
-	return nil
 }
 
 func (out *output) openPipe(proc *process) (pipe *ptyPipe) {
