@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/joho/godotenv"
 	"github.com/pkg/term/termios"
 )
 
@@ -60,12 +59,6 @@ func check(err error) {
 }
 
 func main() {
-	err := godotenv.Load()
-	if err != nil {
-		fmt.Printf("Error loading .env file: %s\n", err)
-		os.Exit(1)
-	}
-
 	if len(os.Args) < 2 {
 		fmt.Println("No processes given as arguments")
 		os.Exit(1)
