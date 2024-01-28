@@ -200,6 +200,7 @@ func scanLines(r io.Reader, callback func([]byte) bool) error {
 	return nil
 }
 
+// runProcess adds the process to the wait group and starts it.
 func (mgr *manager) runProcess(proc *process) {
 	mgr.procWg.Add(1)
 
@@ -211,6 +212,7 @@ func (mgr *manager) runProcess(proc *process) {
 	}()
 }
 
+// waitForExit waits for all processes to exit or for an interruption signal.
 func (mgr *manager) waitForExit() {
 	select {
 	case <-mgr.done:
@@ -231,10 +233,12 @@ func (mgr *manager) waitForExit() {
 	}
 }
 
+// running checks if the process is currently running.
 func (proc *process) running() bool {
 	return proc.Process != nil && proc.ProcessState == nil
 }
 
+// run starts the execution of the process and handles its output.
 func (proc *process) run() {
 	proc.output.pipeOutput(proc)
 	defer proc.output.closePipe(proc)
@@ -244,18 +248,21 @@ func (proc *process) run() {
 	}
 }
 
+// interrupt sends an interrupt signal to a running process.
 func (proc *process) interrupt() {
 	if proc.running() {
 		proc.signal(syscall.SIGINT)
 	}
 }
 
+// kill forcefully stops a running process.
 func (proc *process) kill() {
 	if proc.running() {
 		proc.signal(syscall.SIGKILL)
 	}
 }
 
+// signal sends a specified signal to the process group.
 func (proc *process) signal(sig os.Signal) {
 	group, err := os.FindProcess(-proc.Process.Pid)
 	if err != nil {
@@ -268,6 +275,7 @@ func (proc *process) signal(sig os.Signal) {
 	}
 }
 
+// openPipe initializes a pseudo-terminal for the given process.
 func (out *output) openPipe(proc *process) (pipe *ptyPipe) {
 	var err error
 	pipe = out.pipes[proc]
@@ -283,6 +291,7 @@ func (out *output) openPipe(proc *process) (pipe *ptyPipe) {
 	return
 }
 
+// connect prepares the output for a new process.
 func (out *output) connect(proc *process) {
 	if len(proc.name) > out.maxNameLength {
 		out.maxNameLength = len(proc.name)
@@ -295,6 +304,7 @@ func (out *output) connect(proc *process) {
 	out.pipes[proc] = &ptyPipe{}
 }
 
+// pipeOutput handles the output piping for a process.
 func (out *output) pipeOutput(proc *process) {
 	pipe := out.openPipe(proc)
 
@@ -306,6 +316,7 @@ func (out *output) pipeOutput(proc *process) {
 	}(proc, pipe)
 }
 
+// closePipe closes the pseudo-terminal associated with the process.
 func (out *output) closePipe(proc *process) {
 	if pipe := out.pipes[proc]; pipe != nil {
 		pipe.pty.Close()
@@ -313,6 +324,7 @@ func (out *output) closePipe(proc *process) {
 	}
 }
 
+// writeLine writes a line of output for the specified process, with color formatting.
 func (out *output) writeLine(proc *process, p []byte) {
 	var buf bytes.Buffer
 	color := fmt.Sprintf("\033[1;38;5;%vm", proc.color)
@@ -334,6 +346,7 @@ func (out *output) writeLine(proc *process, p []byte) {
 	buf.WriteTo(os.Stdout)
 }
 
+// writeErr writes an error message for the specified process.
 func (out *output) writeErr(proc *process, err error) {
 	out.writeLine(proc, []byte(
 		fmt.Sprintf("\033[0;31m%v\033[0m", err),
