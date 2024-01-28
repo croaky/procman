@@ -43,19 +43,24 @@ func scanLines(r io.Reader, callback func([]byte) bool) error {
 	return nil
 }
 
-// parseProcfile reads and parses the procfile, returning a slice of entries.
-func parseProcfile(filename string) (entries []entry, err error) {
-	file, err := os.Open(procfile)
+// readProcfile opens the procfile and uses parseProcfile to parse it.
+func readProcfile(filename string) ([]entry, error) {
+	file, err := os.Open(filename)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
+	return parseProcfile(file)
+}
+
+// parseProcfile reads and parses the procfile, returning a slice of entries.
+func parseProcfile(r io.Reader) (entries []entry, err error) {
 	re, _ := regexp.Compile(`^([\w-]+):\s+(.+)$`)
 	names := make(map[string]bool)
 	dup := ""
 
-	err = scanLines(file, func(b []byte) bool {
+	err = scanLines(r, func(b []byte) bool {
 		if len(b) == 0 {
 			return true
 		}

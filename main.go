@@ -33,7 +33,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	entries, err := parseProcfile(procfile)
+	entries, err := readProcfile(procfile)
 	check(err)
 
 	mgr := &manager{}
