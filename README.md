@@ -65,6 +65,8 @@ Differences between Procman, Hivemind, and Foreman?
 - Procman runs the processes in `Procfile.dev` "as-is"; Hivemind loads
   environment variables from `.env` before running.
 - Procman and Hivemind are written in Go; Foreman is written in Ruby.
+- Procman is distributed via its Go source; Hivemind and Foreman offer other
+  packaging options such as a Homebrew package or Ruby gem.
 
 Why create Procman?
 
@@ -74,6 +76,9 @@ Why create Procman?
 - I wanted to learn a bit more about testing with Go. Given the complexities in
   `procman` of dealing with Unix pipes, concurrency, mutexes, signal handling,
   and more, this felt like a worthwhile learning experience.
+- I wanted a process manager that worked for me and my team's needs only,
+  and whose source I could adjust without disrupting other open source
+  maintainers.
 
 ## Author
 
