@@ -7,14 +7,19 @@ import (
 	"time"
 )
 
+// Ensure `go build -o procman .` runs before running integration tests
+
+// TestProcmanIntegration tests that all key parts of procman are working
+// correctly such as Procfile.dev parsing, argument parsing, command executing,
+// and signal handling.
 func TestProcmanIntegration(t *testing.T) {
-	// Create a mock Procfile.dev with simple Unix commands
-	if err := createMockProcfileDev(); err != nil {
+	content := "echo: echo 'Hello from Procman'\nsleep: sleep 10"
+	err := os.WriteFile("Procfile.dev", []byte(content), 0644)
+	if err != nil {
 		t.Fatalf("Failed to create mock Procfile.dev: %v", err)
 	}
-	defer deleteMockProcfileDev()
+	defer os.Remove("Procfile.dev") // clean up the mock
 
-	// Start procman with the mock processes
 	cmd := exec.Command("./procman", "echo,sleep")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Failed to start procman: %v", err)
@@ -23,7 +28,7 @@ func TestProcmanIntegration(t *testing.T) {
 	// Allow some time for procman to start processes
 	time.Sleep(1 * time.Second)
 
-	// Send a SIGINT to procman to simulate user interruption
+	// Simulate user interruption
 	if err := cmd.Process.Signal(os.Interrupt); err != nil {
 		t.Fatalf("Failed to send SIGINT to procman: %v", err)
 	}
@@ -32,13 +37,4 @@ func TestProcmanIntegration(t *testing.T) {
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("procman did not exit cleanly: %v", err)
 	}
-}
-
-func createMockProcfileDev() error {
-	content := "echo: echo 'Hello from Procman'\nsleep: sleep 10"
-	return os.WriteFile("Procfile.dev", []byte(content), 0644)
-}
-
-func deleteMockProcfileDev() {
-	os.Remove("Procfile.dev") // clean up the mock Procfile.dev
 }
