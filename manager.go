@@ -12,7 +12,7 @@ import (
 
 // manager handles overall process management
 type manager struct {
-	output      Outputter
+	output      *output
 	procs       []*process
 	procWg      sync.WaitGroup
 	done        chan bool

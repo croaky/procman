@@ -10,15 +10,6 @@ import (
 	"github.com/pkg/term/termios"
 )
 
-// Outputter defines the methods that output needs to implement.
-type Outputter interface {
-	connect(proc *process)
-	pipeOutput(proc *process)
-	closePipe(proc *process)
-	writeLine(proc *process, p []byte)
-	writeErr(proc *process, err error)
-}
-
 // output manages the output display of processes
 type output struct {
 	maxNameLength int

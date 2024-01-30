@@ -12,7 +12,7 @@ type process struct {
 
 	name   string
 	color  int
-	output Outputter
+	output *output
 }
 
 // running inspects the process to see if it is currently running.

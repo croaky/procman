@@ -1,6 +1,6 @@
 # Procman
 
-A process manager for local development on macOS.
+Procman is process manager for local development on macOS.
 
 Install:
 
@@ -29,10 +29,10 @@ There are no options or flags.
 The output from multiple processes will be combined. For example:
 
 ```txt
-esbuild | 
+esbuild |
 esbuild | > buildwatch
 esbuild | > node build.mjs --watch
-esbuild | 
+esbuild |
 esbuild | watching...
 web     | [67296] Puma starting in cluster mode...
 web     | [67296] * Puma version: 6.4.2 (ruby 3.3.0-p0) ("The Eagle of Durango")
@@ -49,5 +49,38 @@ web     | [67296] - Worker 1 (PID: 67331) booted in 0.9s, phase: 0
 web     | [67296] - Worker 0 (PID: 67330) booted in 0.9s, phase: 0
 ```
 
+## Prior art
+
 Forked from [Hivemind](https://github.com/DarthSim/hivemind) by Sergey "DarthSim" Aleksandrovich,
 which was inspired by [Foreman](https://github.com/ddollar/foreman) by David Dollar.
+
+Differences between Procman, Hivemind, and Foreman?
+
+- Procman is for macOS only; Hivemind and Foreman support Linux.
+- Procman expects processes to be defined in `Procfile.dev` from the directory
+  from which you run `procman`; Hivemind and Foreman are agnostic about the file
+  name and location.
+- Procman runs only one process per process type; Foreman supports multiple
+  processes per process type (e.g. `web=1,worker=2`).
+- Procman runs the processes in `Procfile.dev` "as-is"; Hivemind loads
+  environment variables from `.env` before running.
+- Procman and Hivemind are written in Go; Foreman is written in Ruby.
+
+Why create Procman?
+
+- I had been using `foreman` locally and my app was feeling a little sluggish.
+  I wanted to keep using a process manager and wondered if something more
+  purpose-built for me and my team would feel better.
+- I wanted to learn a bit more about testing with Go. Given the complexities in
+  `procman` of dealing with Unix pipes, concurrency, mutexes, signal handling,
+  and more, this felt like a worthwhile learning experience.
+
+## Author
+
+Dan Croak (@croaky)
+
+## License
+
+Procman is licensed under the MIT license.
+
+See LICENSE for the full license text.
