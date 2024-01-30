@@ -1,7 +1,11 @@
 name: go
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 jobs:
-  build:
+  test:
     runs-on: macos-latest-xlarge
     steps:
       - name: Checkout repository
