@@ -49,6 +49,11 @@ web     | [67296] - Worker 1 (PID: 67331) booted in 0.9s, phase: 0
 web     | [67296] - Worker 0 (PID: 67330) booted in 0.9s, phase: 0
 ```
 
+`procman` will run its processes until it receives a SIGINT (`Ctrl+C`).
+
+If one of the processes finishes, it will send a `SIGINT` to all remaining
+running processes wait 5s, and then send a `SIGKILL` all remaining processes.
+
 ## Prior art
 
 Procman was
