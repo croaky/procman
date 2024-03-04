@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"syscall"
@@ -22,10 +23,15 @@ func (proc *process) running() bool {
 
 // run starts the execution of the process and handles its output.
 func (proc *process) run() {
+	if proc.Process != nil {
+		fmt.Fprintf(os.Stderr, "Process %s already started\n", proc.name)
+		return
+	}
+
 	proc.output.pipeOutput(proc)
 	defer proc.output.closePipe(proc)
 
-	if err := proc.Cmd.Run(); err != nil {
+	if err := proc.Cmd.Wait(); err != nil {
 		proc.output.writeErr(proc, err)
 	}
 }

@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"os"
 	"sync"
-	"syscall"
 
-	"github.com/pkg/term/termios"
+	"github.com/creack/pty"
 )
 
 // output manages the output display of processes
@@ -20,22 +19,6 @@ type output struct {
 // ptyPipe is used for managing pseudo-terminal (PTY) devices
 type ptyPipe struct {
 	pty, tty *os.File
-}
-
-// openPipe initializes a pseudo-terminal for the given process.
-func (out *output) openPipe(proc *process) (pipe *ptyPipe) {
-	var err error
-	pipe = out.pipes[proc]
-
-	pipe.pty, pipe.tty, err = termios.Pty()
-	check(err)
-
-	proc.Stdout = pipe.tty
-	proc.Stderr = pipe.tty
-	proc.Stdin = pipe.tty
-	proc.SysProcAttr = &syscall.SysProcAttr{Setctty: true, Setsid: true}
-
-	return
 }
 
 // connect prepares the output for a new process.
@@ -61,6 +44,20 @@ func (out *output) pipeOutput(proc *process) {
 			return true
 		})
 	}(proc, pipe)
+}
+
+// openPipe initializes a pseudo-terminal and starts the given process.
+func (out *output) openPipe(proc *process) (pipe *ptyPipe) {
+	var err error
+	pipe = out.pipes[proc]
+
+	pipe.pty, err = pty.Start(proc.Cmd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening PTY: %v\n", err)
+		os.Exit(1)
+	}
+
+	return
 }
 
 // closePipe closes the pseudo-terminal associated with the process.
