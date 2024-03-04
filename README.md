@@ -52,8 +52,8 @@ web     | [67296] - Worker 0 (PID: 67330) booted in 0.9s, phase: 0
 ## Prior art
 
 Procman was
-forked from [Hivemind](https://github.com/DarthSim/hivemind) by Sergey Aleksandrovich,
-which was inspired by [Foreman](https://github.com/ddollar/foreman) by David Dollar.
+forked from [Hivemind](https://github.com/DarthSim/hivemind),
+which was inspired by [Foreman](https://github.com/ddollar/foreman).
 
 Differences between Procman, Hivemind, and Foreman?
 
@@ -70,12 +70,10 @@ Differences between Procman, Hivemind, and Foreman?
 
 Why create Procman?
 
-- I had been using `foreman` and the app was feeling sluggish.
-  I wanted to keep using a process manager and wondered if something
-  purpose-built for my app would feel better.
-- I wanted to learn more about testing with Go.
-  Given the complexities of dealing with Unix pipes, concurrency, mutexes,
-  signal handling, etc., this felt like a worthwhile learning experience.
+- I had been using another process manager and the app was feeling sluggish.
+  I wondered if something purpose-built for my app would feel better.
+- I wanted to learn more about macOS test runners on GitHub Actions,
+  testing with Go, Unix pipes, concurrency, mutexes, signal handling, etc.
 
 ## Author
 
