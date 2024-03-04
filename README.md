@@ -72,6 +72,8 @@ Differences between Procman, Hivemind, and Foreman?
   Hivemind loads environment variables from `.env` before running.
 - Procman is distributed via its Go source;
   Hivemind and Foreman can be installed via Homebrew package or Ruby gem.
+- Procman depends on [github.com/creack/pty](https://github.com/creack/pty/tree/master)
+  for a PTY interface; Hivemind depends on [github.com/pkg/term](https://github.com/pkg/term).
 
 Why create Procman?
 
