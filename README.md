@@ -73,3 +73,7 @@ go test ./...                         # run tests
 go vet ./...                          # static checks
 goimports -local "$(go list -m)" -w . # format imports
 ```
+
+## License
+
+MIT
