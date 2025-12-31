@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/creack/pty"
 )
+
+const timeout = 5 * time.Second
 
 // manager handles overall process management
 type manager struct {
@@ -49,8 +52,8 @@ func (mgr *manager) setupProcesses(entries []entry, procNames []string) error {
 
 // setupSignalHandling configures handling of interrupt signals.
 func (mgr *manager) setupSignalHandling() {
-	mgr.done = make(chan bool, 1)
-	mgr.interrupted = make(chan os.Signal)
+	mgr.done = make(chan bool, len(mgr.procs))
+	mgr.interrupted = make(chan os.Signal, 1)
 	signal.Notify(mgr.interrupted, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 }
 
@@ -128,13 +131,8 @@ func (proc *process) kill() {
 }
 
 // signal sends a specified signal to the process group.
-func (proc *process) signal(sig os.Signal) {
-	group, err := os.FindProcess(-proc.Process.Pid)
-	if err != nil {
-		proc.output.writeErr(proc, err)
-		return
-	}
-	if err = group.Signal(sig); err != nil {
+func (proc *process) signal(sig syscall.Signal) {
+	if err := syscall.Kill(-proc.Process.Pid, sig); err != nil {
 		proc.output.writeErr(proc, err)
 	}
 }
@@ -163,19 +161,29 @@ func (out *output) pipeOutput(proc *process) {
 		fmt.Fprintf(os.Stderr, "Error opening PTY: %v\n", err)
 		os.Exit(1)
 	}
+
+	out.mutex.Lock()
 	out.pipes[proc] = ptyFile
+	out.mutex.Unlock()
 
 	go func() {
 		scanner := bufio.NewScanner(ptyFile)
 		for scanner.Scan() {
 			out.writeLine(proc, scanner.Bytes())
 		}
+		if err := scanner.Err(); err != nil && !errors.Is(err, os.ErrClosed) {
+			out.writeErr(proc, err)
+		}
 	}()
 }
 
 // closePipe closes the pseudo-terminal associated with the process.
 func (out *output) closePipe(proc *process) {
-	if ptyFile := out.pipes[proc]; ptyFile != nil {
+	out.mutex.Lock()
+	ptyFile := out.pipes[proc]
+	out.mutex.Unlock()
+
+	if ptyFile != nil {
 		ptyFile.Close()
 	}
 }

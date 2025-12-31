@@ -8,13 +8,10 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"time"
 )
 
 var (
 	colors     = []int{2, 3, 4, 5, 6, 42, 130, 103, 129, 108}
-	procfile   = "./Procfile.dev"
-	timeout    = 5 * time.Second
 	procfileRe = regexp.MustCompile(`^([\w-]+):\s+(.+)$`)
 )
 
@@ -31,7 +28,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	entries, err := readProcfile(procfile)
+	entries, err := readProcfile("./Procfile.dev")
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -97,7 +94,7 @@ func parseProcfile(r io.Reader) ([]entry, error) {
 
 		name, cmd := params[1], params[2]
 		if names[name] {
-			return nil, fmt.Errorf("Duplicate process name %s in Procfile.dev", name)
+			return nil, fmt.Errorf("duplicate process name %s in Procfile.dev", name)
 		}
 		names[name] = true
 		entries = append(entries, entry{name: name, cmd: cmd})
@@ -107,7 +104,7 @@ func parseProcfile(r io.Reader) ([]entry, error) {
 		return nil, err
 	}
 	if len(entries) == 0 {
-		return nil, errors.New("No entries found in Procfile.dev")
+		return nil, errors.New("no entries found in Procfile.dev")
 	}
 	return entries, nil
 }
