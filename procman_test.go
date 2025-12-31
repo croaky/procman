@@ -9,6 +9,18 @@ import (
 	"time"
 )
 
+func TestMain(m *testing.M) {
+	cmd := exec.Command("go", "build", "-o", "procman", ".")
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to build: %v\n", err)
+		os.Exit(1)
+	}
+	code := m.Run()
+	os.Remove("procman")
+	os.Remove("Procfile.dev")
+	os.Exit(code)
+}
+
 func TestSetupProcesses(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -134,7 +146,6 @@ func TestWriteErr(t *testing.T) {
 }
 
 // TestProcmanIntegration tests the full procman workflow.
-// Requires `go build -o procman .` to be run first.
 func TestProcmanIntegration(t *testing.T) {
 	content := "echo: echo 'hello'\nsleep: sleep 10"
 	if err := os.WriteFile("Procfile.dev", []byte(content), 0644); err != nil {
