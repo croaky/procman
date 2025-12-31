@@ -57,13 +57,13 @@ func TestParseProcfile(t *testing.T) {
 	tests := []struct {
 		name    string
 		content string
-		want    []entry
+		want    []procDef
 		wantErr bool
 	}{
 		{
 			name:    "Valid procfile",
 			content: "web: npm start\nworker: npm run worker",
-			want: []entry{
+			want: []procDef{
 				{name: "web", cmd: "npm start"},
 				{name: "worker", cmd: "npm run worker"},
 			},

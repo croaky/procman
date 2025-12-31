@@ -8,7 +8,7 @@ Install:
 go install github.com/croaky/procman@latest
 ```
 
-Define your processes in `Procfile.dev`. For example:
+Define your process definitions in `Procfile.dev`. For example:
 
 ```txt
 clock: bundle exec ruby cmd/clock.rb
@@ -55,7 +55,7 @@ web     | [67296] - Worker 0 (PID: 67330) booted in 0.9s, phase: 0
 If one of the processes finishes, it will send a `SIGINT` to all remaining
 running processes, wait 5s, and then send a `SIGKILL` to all remaining processes.
 
-`procman` runs exactly one process per process type.
+`procman` runs exactly one process per definition.
 
 It runs the processes in `Procfile.dev` "as-is";
 It does not load environment variables from `.env` before running.

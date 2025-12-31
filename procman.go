@@ -26,15 +26,15 @@ type manager struct {
 	interrupted chan os.Signal
 }
 
-// setupProcesses creates and initializes processes based on the given entries.
-func (mgr *manager) setupProcesses(entries []entry, procNames []string) error {
-	entryMap := make(map[string]string)
-	for _, ent := range entries {
-		entryMap[ent.name] = ent.cmd
+// setupProcesses creates and initializes processes based on the given procDefs.
+func (mgr *manager) setupProcesses(defs []procDef, procNames []string) error {
+	defMap := make(map[string]string)
+	for _, def := range defs {
+		defMap[def.name] = def.cmd
 	}
 
 	for i, name := range procNames {
-		cmd, ok := entryMap[name]
+		cmd, ok := defMap[name]
 		if !ok {
 			return fmt.Errorf("No process named %s in Procfile.dev\n", name)
 		}

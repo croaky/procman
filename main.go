@@ -1,3 +1,10 @@
+// procman is a process manager for local development on macOS.
+// It reads process definitions from Procfile.dev and runs them concurrently,
+// combining their output with colored prefixes.
+//
+// Usage:
+//
+//	procman web,worker
 package main
 
 import (
@@ -15,8 +22,8 @@ var (
 	procfileRe = regexp.MustCompile(`^([\w-]+):\s+(.+)$`)
 )
 
-// entry represents a single line in the procfile, with a name and command
-type entry struct {
+// procDef represents a single line in the procfile, with a name and command
+type procDef struct {
 	name string
 	cmd  string
 }
@@ -66,7 +73,7 @@ func parseArgs(args []string) ([]string, error) {
 }
 
 // readProcfile opens the procfile and parses it.
-func readProcfile(filename string) ([]entry, error) {
+func readProcfile(filename string) ([]procDef, error) {
 	file, err := os.Open(filename)
 	if err != nil {
 		return nil, err
@@ -75,10 +82,10 @@ func readProcfile(filename string) ([]entry, error) {
 	return parseProcfile(file)
 }
 
-// parseProcfile reads and parses the procfile, returning a slice of entries.
-func parseProcfile(r io.Reader) ([]entry, error) {
+// parseProcfile reads and parses the procfile, returning a slice of procDefs.
+func parseProcfile(r io.Reader) ([]procDef, error) {
 	names := make(map[string]bool)
-	var entries []entry
+	var defs []procDef
 
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
@@ -97,14 +104,14 @@ func parseProcfile(r io.Reader) ([]entry, error) {
 			return nil, fmt.Errorf("duplicate process name %s in Procfile.dev", name)
 		}
 		names[name] = true
-		entries = append(entries, entry{name: name, cmd: cmd})
+		defs = append(defs, procDef{name: name, cmd: cmd})
 	}
 
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
-	if len(entries) == 0 {
-		return nil, errors.New("no entries found in Procfile.dev")
+	if len(defs) == 0 {
+		return nil, errors.New("no procDefs found in Procfile.dev")
 	}
-	return entries, nil
+	return defs, nil
 }

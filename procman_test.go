@@ -12,13 +12,13 @@ import (
 func TestSetupProcesses(t *testing.T) {
 	tests := []struct {
 		name      string
-		entries   []entry
+		defs      []procDef
 		procNames []string
 		wantError bool
 	}{
 		{
 			name: "Valid setup",
-			entries: []entry{
+			defs: []procDef{
 				{name: "web", cmd: "command1"},
 				{name: "db", cmd: "command2"},
 			},
@@ -27,7 +27,7 @@ func TestSetupProcesses(t *testing.T) {
 		},
 		{
 			name: "Invalid process name",
-			entries: []entry{
+			defs: []procDef{
 				{name: "web", cmd: "command1"},
 			},
 			procNames: []string{"web", "api"},
@@ -38,7 +38,7 @@ func TestSetupProcesses(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mgr := manager{output: &output{}}
-			err := mgr.setupProcesses(tt.entries, tt.procNames)
+			err := mgr.setupProcesses(tt.defs, tt.procNames)
 
 			if (err != nil) != tt.wantError {
 				t.Errorf("setupProcesses() error = %v, wantError %v", err, tt.wantError)
@@ -136,7 +136,7 @@ func TestWriteErr(t *testing.T) {
 // TestProcmanIntegration tests the full procman workflow.
 // Requires `go build -o procman .` to be run first.
 func TestProcmanIntegration(t *testing.T) {
-	content := "echo: echo 'Hello from Procman'\nsleep: sleep 10"
+	content := "echo: echo 'hello'\nsleep: sleep 10"
 	if err := os.WriteFile("Procfile.dev", []byte(content), 0644); err != nil {
 		t.Fatalf("Failed to create mock Procfile.dev: %v", err)
 	}
