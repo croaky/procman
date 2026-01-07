@@ -71,8 +71,8 @@ for a PTY interface.
 ```bash
 # checks
 goimports -local "$(go list -m)" -w .
-go test ./...
 go vet ./...
+go test ./...
 deadcode .
 
 # commit
