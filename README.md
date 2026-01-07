@@ -73,6 +73,7 @@ for a PTY interface.
 goimports -local "$(go list -m)" -w .
 go test ./...
 go vet ./...
+deadcode .
 
 # commit
 git add -A
