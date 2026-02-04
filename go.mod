@@ -4,7 +4,7 @@ go 1.25
 
 require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0
-	github.com/creack/pty v1.1.21
+	github.com/creack/pty v1.1.24
 	github.com/fsnotify/fsnotify v1.9.0
 )
 

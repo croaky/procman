@@ -84,7 +84,6 @@ type output struct {
 	pipes         map[*process]*os.File
 }
 
-
 func main() {
 	procNames, err := parseArgs(os.Args)
 	if err != nil {
