@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -104,6 +106,23 @@ func TestParseProcfile(t *testing.T) {
 			want:    nil,
 			wantErr: true,
 		},
+		{
+			name:    "With watch patterns",
+			content: "web: bundle exec ruby cmd/web.rb  # watch: lib/**/*.rb,ui/**/*.haml",
+			want: []procDef{
+				{name: "web", cmd: "bundle exec ruby cmd/web.rb", watchPatterns: []string{"lib/**/*.rb", "ui/**/*.haml"}},
+			},
+			wantErr: false,
+		},
+		{
+			name:    "Mixed with and without watch",
+			content: "web: ruby web.rb  # watch: *.rb\nesbuild: bun build",
+			want: []procDef{
+				{name: "web", cmd: "ruby web.rb", watchPatterns: []string{"*.rb"}},
+				{name: "esbuild", cmd: "bun build"},
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -171,19 +190,26 @@ func TestSetupSignalHandling(t *testing.T) {
 
 func TestProcessRunning(t *testing.T) {
 	cmd := exec.Command("sleep", "1")
-	proc := &process{Cmd: cmd, output: &output{}}
+	out := &output{pipes: make(map[*process]*os.File)}
+	proc := &process{Cmd: cmd, output: out, done: make(chan struct{})}
 
 	if proc.running() {
 		t.Errorf("expected process to not be running before start")
 	}
 
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("failed to start process: %v", err)
-	}
+	// Start via run path to set started/stopped flags
+	go proc.run()
+	time.Sleep(200 * time.Millisecond)
 
 	if !proc.running() {
 		t.Errorf("expected process to be running after start")
 	}
+
+	// Cleanup: kill the process and wait for run() to complete
+	if proc.Process != nil {
+		proc.Process.Kill()
+	}
+	<-proc.done
 }
 
 func TestInit(t *testing.T) {
@@ -246,7 +272,66 @@ func TestWriteErr(t *testing.T) {
 	}
 }
 
-// TestProcmanIntegration tests the full procman workflow.
+func TestMatchesPattern(t *testing.T) {
+	tests := []struct {
+		name     string
+		patterns []string
+		path     string
+		want     bool
+	}{
+		{
+			name:     "Simple glob match",
+			patterns: []string{"*.rb"},
+			path:     "app.rb",
+			want:     true,
+		},
+		{
+			name:     "Simple glob no match",
+			patterns: []string{"*.rb"},
+			path:     "app.go",
+			want:     false,
+		},
+		{
+			name:     "Recursive glob match",
+			patterns: []string{"lib/**/*.rb"},
+			path:     "lib/models/user.rb",
+			want:     true,
+		},
+		{
+			name:     "Recursive glob no match wrong dir",
+			patterns: []string{"lib/**/*.rb"},
+			path:     "app/models/user.rb",
+			want:     false,
+		},
+		{
+			name:     "Multiple patterns first matches",
+			patterns: []string{"*.rb", "*.haml"},
+			path:     "view.haml",
+			want:     true,
+		},
+		{
+			name:     "Multiple patterns none match",
+			patterns: []string{"*.rb", "*.haml"},
+			path:     "style.css",
+			want:     false,
+		},
+		{
+			name:     "Directory pattern match",
+			patterns: []string{"ui/**/*.haml"},
+			path:     "ui/views/index.haml",
+			want:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr := &manager{watchDir: ""} // empty means path is already relative
+			if got := mgr.matchPatterns(tt.patterns, tt.path); got != tt.want {
+				t.Errorf("matchesPattern(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
 func TestProcmanIntegration(t *testing.T) {
 	content := "echo: echo 'hello'\nsleep: sleep 10"
 	if err := os.WriteFile("Procfile.dev", []byte(content), 0644); err != nil {
@@ -267,5 +352,63 @@ func TestProcmanIntegration(t *testing.T) {
 
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("procman did not exit cleanly: %v", err)
+	}
+}
+
+func TestRestartOnFileChange(t *testing.T) {
+	dir := t.TempDir()
+	procfile := "echo: echo run; sleep 5  # watch: *.rb\n"
+	if err := os.WriteFile(filepath.Join(dir, "Procfile.dev"), []byte(procfile), 0644); err != nil {
+		t.Fatalf("write procfile: %v", err)
+	}
+	// Create an initial .rb file so the watcher has something to watch
+	if err := os.WriteFile(filepath.Join(dir, "init.rb"), []byte(""), 0644); err != nil {
+		t.Fatalf("create init.rb: %v", err)
+	}
+
+	cwd, _ := os.Getwd()
+	exe := filepath.Join(cwd, "procman")
+	cmd := exec.Command(exe, "echo")
+	cmd.Dir = dir
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("StdoutPipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start procman: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Signal(os.Interrupt)
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case <-done:
+		case <-time.After(6 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+		}
+	}()
+
+	sc := bufio.NewScanner(stdout)
+	restarted := make(chan struct{})
+	go func() {
+		for sc.Scan() {
+			if strings.Contains(sc.Text(), "restarting...") {
+				close(restarted)
+				return
+			}
+		}
+	}()
+
+	// Trigger a change by modifying the existing file
+	time.Sleep(500 * time.Millisecond)
+	if err := os.WriteFile(filepath.Join(dir, "init.rb"), []byte("puts :x\n"), 0644); err != nil {
+		t.Fatalf("modify file: %v", err)
+	}
+
+	select {
+	case <-restarted:
+	case <-time.After(4 * time.Second):
+		t.Fatal("timeout waiting for restart")
 	}
 }
