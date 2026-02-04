@@ -70,10 +70,6 @@ type process struct {
 	color         int
 	output        *output
 	watchPatterns []string
-	mu            sync.Mutex
-	started       bool
-	stopped       bool
-	done          chan struct{} // closed when run() completes
 }
 
 // output manages the output display of processes
@@ -202,7 +198,6 @@ func (mgr *manager) setupProcesses(defs []procDef, procNames []string) error {
 			color:         colors[i%len(colors)],
 			output:        mgr.output,
 			watchPatterns: def.watchPatterns,
-			done:          make(chan struct{}),
 		}
 		mgr.procs = append(mgr.procs, proc)
 	}
@@ -252,44 +247,23 @@ func (mgr *manager) waitForExit() {
 	}
 }
 
-// running inspects the process to see if it is currently running.
-func (proc *process) running() bool {
-	proc.mu.Lock()
-	defer proc.mu.Unlock()
-	return proc.started && !proc.stopped
-}
-
 // run starts the execution of the process and handles its output.
-func (proc *process) run() {
-	if proc.Process != nil {
-		fmt.Fprintf(os.Stderr, "Process %s already started\n", proc.name)
-		return
-	}
-
+func (proc *process) run() error {
 	proc.output.pipeOutput(proc)
 	defer proc.output.closePipe(proc)
-	defer func() {
-		proc.mu.Lock()
-		proc.stopped = true
-		proc.mu.Unlock()
-		close(proc.done)
-	}()
-
-	if err := proc.Cmd.Wait(); err != nil {
-		proc.output.writeErr(proc, err)
-	}
+	return proc.Cmd.Wait()
 }
 
 // interrupt sends an interrupt signal to a running process.
 func (proc *process) interrupt() {
-	if proc.running() {
+	if proc.Process != nil {
 		proc.signal(syscall.SIGINT)
 	}
 }
 
 // kill forcefully stops a running process.
 func (proc *process) kill() {
-	if proc.running() {
+	if proc.Process != nil {
 		proc.signal(syscall.SIGKILL)
 	}
 }
@@ -318,10 +292,6 @@ func (out *output) pipeOutput(proc *process) {
 		fmt.Fprintf(os.Stderr, "Error opening PTY: %v\n", err)
 		os.Exit(1)
 	}
-
-	proc.mu.Lock()
-	proc.started = true
-	proc.mu.Unlock()
 
 	out.mutex.Lock()
 	out.pipes[proc] = ptyFile
@@ -542,30 +512,21 @@ func (mgr *manager) stopWatcher() {
 }
 
 func (mgr *manager) restart(p *process) {
-	p.mu.Lock()
-	if !p.started || p.stopped {
-		p.mu.Unlock()
-		return
-	}
-	done := p.done
-	p.mu.Unlock()
-
 	p.output.writeLine(p, []byte("\033[0;33mrestarting...\033[0m"))
 	p.interrupt()
 
+	// Wait for exit with timeout
+	done := make(chan struct{})
+	go func() {
+		p.Process.Wait()
+		close(done)
+	}()
 	select {
 	case <-done:
 	case <-time.After(timeout):
 		p.kill()
-		<-done
 	}
 
-	p.mu.Lock()
 	p.Cmd = exec.Command("/bin/sh", "-c", p.cmdStr)
-	p.done = make(chan struct{})
-	p.started = false
-	p.stopped = false
-	p.mu.Unlock()
-
 	mgr.runProcess(p)
 }

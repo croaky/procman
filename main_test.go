@@ -188,30 +188,6 @@ func TestSetupSignalHandling(t *testing.T) {
 	}
 }
 
-func TestProcessRunning(t *testing.T) {
-	cmd := exec.Command("sleep", "1")
-	out := &output{pipes: make(map[*process]*os.File)}
-	proc := &process{Cmd: cmd, output: out, done: make(chan struct{})}
-
-	if proc.running() {
-		t.Errorf("expected process to not be running before start")
-	}
-
-	// Start via run path to set started/stopped flags
-	go proc.run()
-	time.Sleep(200 * time.Millisecond)
-
-	if !proc.running() {
-		t.Errorf("expected process to be running after start")
-	}
-
-	// Cleanup: kill the process and wait for run() to complete
-	if proc.Process != nil {
-		proc.Process.Kill()
-	}
-	<-proc.done
-}
-
 func TestInit(t *testing.T) {
 	out := &output{}
 	procs := []*process{{name: "testProcess"}}
