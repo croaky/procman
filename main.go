@@ -30,7 +30,7 @@ import (
 
 const (
 	timeout  = 5 * time.Second
-	debounce = 500 * time.Millisecond
+	debounce = 100 * time.Millisecond
 )
 
 var (
@@ -73,7 +73,6 @@ type process struct {
 	mu            sync.Mutex
 	started       bool
 	stopped       bool
-	restarting    bool
 	done          chan struct{} // closed when run() completes
 }
 
@@ -222,15 +221,11 @@ func (mgr *manager) runProcess(proc *process) {
 	mgr.procWg.Add(1)
 	go func() {
 		defer mgr.procWg.Done()
-		defer func() {
-			proc.mu.Lock()
-			restarting := proc.restarting
-			proc.mu.Unlock()
-			if !restarting {
-				mgr.done <- struct{}{}
-			}
-		}()
 		proc.run()
+		// Only signal done for unwatched processes
+		if len(proc.watchPatterns) == 0 {
+			mgr.done <- struct{}{}
+		}
 	}()
 }
 
@@ -548,11 +543,10 @@ func (mgr *manager) stopWatcher() {
 
 func (mgr *manager) restart(p *process) {
 	p.mu.Lock()
-	if p.restarting || !p.started || p.stopped {
+	if !p.started || p.stopped {
 		p.mu.Unlock()
 		return
 	}
-	p.restarting = true
 	done := p.done
 	p.mu.Unlock()
 
@@ -571,7 +565,6 @@ func (mgr *manager) restart(p *process) {
 	p.done = make(chan struct{})
 	p.started = false
 	p.stopped = false
-	p.restarting = false
 	p.mu.Unlock()
 
 	mgr.runProcess(p)
