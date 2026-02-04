@@ -16,32 +16,40 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/creack/pty"
+	"github.com/fsnotify/fsnotify"
 )
 
-const timeout = 5 * time.Second
+const (
+	timeout  = 5 * time.Second
+	debounce = 500 * time.Millisecond
+)
 
 var (
 	colors     = []int{2, 3, 4, 5, 6, 42, 130, 103, 129, 108}
-	procfileRe = regexp.MustCompile(`^([\w-]+):\s+(.+)$`)
+	procfileRe = regexp.MustCompile(`^([\w-]+):\s+(.+?)(?:\s+#\s*watch:\s*(.+))?$`)
 )
 
 // procDef represents a single line in the procfile, with a name and command
 type procDef struct {
-	name string
-	cmd  string
+	name          string
+	cmd           string
+	watchPatterns []string
 }
 
 // manager handles overall process management
 type manager struct {
 	output      *output
 	procs       []*process
+	watchers    []*watcher
 	procWg      sync.WaitGroup
 	done        chan bool
 	interrupted chan os.Signal
@@ -50,9 +58,14 @@ type manager struct {
 // process represents an individual process to be managed
 type process struct {
 	*exec.Cmd
-	name   string
-	color  int
-	output *output
+	name          string
+	cmdStr        string
+	color         int
+	output        *output
+	watchPatterns []string
+	mu            sync.Mutex
+	restarting    bool
+	done          chan struct{} // closed when run() completes
 }
 
 // output manages the output display of processes
@@ -60,6 +73,16 @@ type output struct {
 	maxNameLength int
 	mutex         sync.Mutex
 	pipes         map[*process]*os.File
+}
+
+// watcher monitors files and restarts a process on changes
+type watcher struct {
+	fsw      *fsnotify.Watcher
+	proc     *process
+	mgr      *manager
+	workDir  string
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 func main() {
@@ -87,6 +110,8 @@ func main() {
 	for _, proc := range mgr.procs {
 		mgr.runProcess(proc)
 	}
+
+	mgr.setupWatchers()
 
 	go mgr.waitForExit()
 	mgr.procWg.Wait()
@@ -129,7 +154,7 @@ func parseProcfile(r io.Reader) ([]procDef, error) {
 		}
 
 		params := procfileRe.FindStringSubmatch(line)
-		if len(params) != 3 {
+		if len(params) < 3 {
 			continue
 		}
 
@@ -138,7 +163,16 @@ func parseProcfile(r io.Reader) ([]procDef, error) {
 			return nil, fmt.Errorf("duplicate process name %s in Procfile.dev", name)
 		}
 		names[name] = true
-		defs = append(defs, procDef{name: name, cmd: cmd})
+
+		var patterns []string
+		if len(params) > 3 && params[3] != "" {
+			for _, p := range strings.Split(params[3], ",") {
+				if p = strings.TrimSpace(p); p != "" {
+					patterns = append(patterns, p)
+				}
+			}
+		}
+		defs = append(defs, procDef{name: name, cmd: cmd, watchPatterns: patterns})
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -152,22 +186,25 @@ func parseProcfile(r io.Reader) ([]procDef, error) {
 
 // setupProcesses creates and initializes processes based on the given procDefs.
 func (mgr *manager) setupProcesses(defs []procDef, procNames []string) error {
-	defMap := make(map[string]string)
+	defMap := make(map[string]procDef)
 	for _, def := range defs {
-		defMap[def.name] = def.cmd
+		defMap[def.name] = def
 	}
 
 	for i, name := range procNames {
-		cmd, ok := defMap[name]
+		def, ok := defMap[name]
 		if !ok {
-			return fmt.Errorf("No process named %s in Procfile.dev\n", name)
+			return fmt.Errorf("no process named %s in Procfile.dev", name)
 		}
 
 		proc := &process{
-			Cmd:    exec.Command("/bin/sh", "-c", cmd),
-			name:   name,
-			color:  colors[i%len(colors)],
-			output: mgr.output,
+			Cmd:           exec.Command("/bin/sh", "-c", def.cmd),
+			name:          name,
+			cmdStr:        def.cmd,
+			color:         colors[i%len(colors)],
+			output:        mgr.output,
+			watchPatterns: def.watchPatterns,
+			done:          make(chan struct{}),
 		}
 		mgr.procs = append(mgr.procs, proc)
 	}
@@ -186,7 +223,14 @@ func (mgr *manager) runProcess(proc *process) {
 	mgr.procWg.Add(1)
 	go func() {
 		defer mgr.procWg.Done()
-		defer func() { mgr.done <- true }()
+		defer func() {
+			proc.mu.Lock()
+			restarting := proc.restarting
+			proc.mu.Unlock()
+			if !restarting {
+				mgr.done <- true
+			}
+		}()
 		proc.run()
 	}()
 }
@@ -196,6 +240,10 @@ func (mgr *manager) waitForExit() {
 	select {
 	case <-mgr.done:
 	case <-mgr.interrupted:
+	}
+
+	for _, w := range mgr.watchers {
+		w.stop()
 	}
 
 	for _, proc := range mgr.procs {
@@ -226,6 +274,7 @@ func (proc *process) run() {
 
 	proc.output.pipeOutput(proc)
 	defer proc.output.closePipe(proc)
+	defer close(proc.done)
 
 	if err := proc.Cmd.Wait(); err != nil {
 		proc.output.writeErr(proc, err)
@@ -317,4 +366,178 @@ func (out *output) writeLine(proc *process, p []byte) {
 // writeErr writes an error message for the specified process.
 func (out *output) writeErr(proc *process, err error) {
 	out.writeLine(proc, []byte(fmt.Sprintf("\033[0;31m%v\033[0m", err)))
+}
+
+// setupWatchers creates file watchers for processes with watch patterns.
+func (mgr *manager) setupWatchers() {
+	for _, proc := range mgr.procs {
+		if len(proc.watchPatterns) == 0 {
+			continue
+		}
+		w, err := newWatcher(proc, mgr)
+		if err != nil {
+			proc.output.writeErr(proc, fmt.Errorf("watch setup: %v", err))
+			continue
+		}
+		mgr.watchers = append(mgr.watchers, w)
+		go w.run()
+	}
+}
+
+// newWatcher creates a watcher for the given process.
+func newWatcher(proc *process, mgr *manager) (*watcher, error) {
+	fsw, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, err
+	}
+
+	wd, _ := os.Getwd()
+	w := &watcher{
+		fsw:     fsw,
+		proc:    proc,
+		mgr:     mgr,
+		workDir: wd,
+		stopCh:  make(chan struct{}),
+	}
+
+	// Find and watch directories containing files matching patterns
+	dirs := make(map[string]bool)
+	for _, pattern := range proc.watchPatterns {
+		matches, err := doublestar.Glob(os.DirFS("."), pattern)
+		if err != nil {
+			proc.output.writeErr(proc, fmt.Errorf("glob %q: %v", pattern, err))
+			continue
+		}
+		for _, match := range matches {
+			dir := filepath.Dir(match)
+			dirs[dir] = true
+		}
+		// Also watch parent directories for new files
+		if idx := strings.Index(pattern, "*"); idx > 0 {
+			base := filepath.Dir(pattern[:idx])
+			filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
+				if err != nil {
+					return nil
+				}
+				if d.IsDir() {
+					dirs[path] = true
+				}
+				return nil
+			})
+		}
+	}
+
+	watchedCount := 0
+	for dir := range dirs {
+		if err := fsw.Add(dir); err != nil {
+			proc.output.writeErr(proc, fmt.Errorf("watch %s: %v", dir, err))
+		} else {
+			watchedCount++
+		}
+	}
+	if watchedCount == 0 && len(dirs) > 0 {
+		fsw.Close()
+		return nil, fmt.Errorf("failed to watch any directories")
+	}
+
+	return w, nil
+}
+
+// run starts the watch loop.
+func (w *watcher) run() {
+	var timer *time.Timer
+	var timerC <-chan time.Time
+
+	for {
+		select {
+		case <-w.stopCh:
+			if timer != nil {
+				timer.Stop()
+			}
+			w.fsw.Close()
+			return
+		case event, ok := <-w.fsw.Events:
+			if !ok {
+				return
+			}
+			if !w.matchesPattern(event.Name) {
+				continue
+			}
+			if event.Op&(fsnotify.Write|fsnotify.Create) == 0 {
+				continue
+			}
+			// Debounce
+			if timer != nil {
+				timer.Stop()
+			}
+			timer = time.NewTimer(debounce)
+			timerC = timer.C
+		case <-timerC:
+			w.restart()
+			timerC = nil
+		case err, ok := <-w.fsw.Errors:
+			if !ok {
+				return
+			}
+			w.proc.output.writeErr(w.proc, err)
+		}
+	}
+}
+
+// matchesPattern checks if a file path matches any watch pattern.
+func (w *watcher) matchesPattern(path string) bool {
+	// fsnotify returns absolute paths; convert to relative for pattern matching
+	if w.workDir != "" {
+		if rel, err := filepath.Rel(w.workDir, path); err == nil {
+			path = rel
+		}
+	}
+	for _, pattern := range w.proc.watchPatterns {
+		matched, err := doublestar.Match(pattern, path)
+		if err != nil {
+			w.proc.output.writeErr(w.proc, fmt.Errorf("pattern %q: %v", pattern, err))
+			continue
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+// restart stops and restarts the watched process.
+func (w *watcher) restart() {
+	w.proc.mu.Lock()
+	if w.proc.restarting || !w.proc.running() {
+		w.proc.mu.Unlock()
+		return
+	}
+	w.proc.restarting = true
+	done := w.proc.done
+	w.proc.mu.Unlock()
+
+	w.proc.output.writeLine(w.proc, []byte("\033[0;33mrestarting...\033[0m"))
+	w.proc.interrupt()
+
+	// Wait for process to exit (with timeout)
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		w.proc.kill()
+		<-done // still wait for run() to complete
+	}
+
+	// Create new command and restart
+	w.proc.mu.Lock()
+	w.proc.Cmd = exec.Command("/bin/sh", "-c", w.proc.cmdStr)
+	w.proc.done = make(chan struct{})
+	w.proc.restarting = false
+	w.proc.mu.Unlock()
+
+	w.mgr.runProcess(w.proc)
+}
+
+// stop signals the watcher to stop.
+func (w *watcher) stop() {
+	w.stopOnce.Do(func() { close(w.stopCh) })
 }

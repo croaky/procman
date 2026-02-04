@@ -60,6 +60,20 @@ running processes, wait 5s, and then send a `SIGKILL` to all remaining processes
 It runs the processes in `Procfile.dev` "as-is";
 It does not load environment variables from `.env` before running.
 
+## File watching
+
+Add `# watch: PATTERNS` to automatically restart a process when files change:
+
+```txt
+web: bundle exec ruby cmd/web.rb  # watch: lib/**/*.rb,ui/**/*.haml
+esbuild: bun run buildwatch
+```
+
+Patterns are relative to the directory containing `Procfile.dev`.
+Glob patterns support `*` (single directory) and `**` (recursive).
+Processes without a watch annotation run without file watching.
+Changes are debounced (500ms) to avoid rapid restarts.
+
 `procman` is distributed via Go source code,
 not via a Homebrew package.
 
