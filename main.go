@@ -43,7 +43,6 @@ type procDef struct {
 	name          string
 	cmd           string
 	watchPatterns []string
-	restartSignal syscall.Signal
 }
 
 // manager handles overall process management
@@ -65,13 +64,15 @@ type manager struct {
 
 // process represents an individual process to be managed
 type process struct {
-	*exec.Cmd
 	name          string
 	cmdStr        string
 	color         int
 	output        *output
 	watchPatterns []string
-	restartSignal syscall.Signal
+
+	mu      sync.Mutex
+	cmd     *exec.Cmd
+	cmdDone chan struct{} // closed when cmd.Wait() returns
 }
 
 // output manages the output display of processes
@@ -161,11 +162,10 @@ func parseProcfile(r io.Reader) ([]procDef, error) {
 		names[name] = true
 
 		var patterns []string
-		restartSignal := syscall.SIGINT // default
 		if len(params) > 3 && params[3] != "" {
-			patterns, restartSignal = parseComment(params[3])
+			patterns = parseWatchPatterns(params[3])
 		}
-		defs = append(defs, procDef{name: name, cmd: cmd, watchPatterns: patterns, restartSignal: restartSignal})
+		defs = append(defs, procDef{name: name, cmd: cmd, watchPatterns: patterns})
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -177,57 +177,21 @@ func parseProcfile(r io.Reader) ([]procDef, error) {
 	return defs, nil
 }
 
-// parseComment extracts watch patterns and signal from a comment string.
-// Supports: "watch: lib/**/*.rb,ui/**/*.haml signal: USR2"
-func parseComment(comment string) ([]string, syscall.Signal) {
-	var patterns []string
-	restartSignal := syscall.SIGINT
-
-	// Find watch: section
+// parseWatchPatterns extracts watch patterns from a comment string.
+// Example: "watch: lib/**/*.rb,ui/**/*.haml"
+func parseWatchPatterns(comment string) []string {
 	watchIdx := strings.Index(comment, "watch:")
-	signalIdx := strings.Index(comment, "signal:")
-
-	if watchIdx >= 0 {
-		start := watchIdx + len("watch:")
-		end := len(comment)
-		if signalIdx > watchIdx {
-			end = signalIdx
-		}
-		watchStr := strings.TrimSpace(comment[start:end])
-		for _, p := range strings.Split(watchStr, ",") {
-			if p = strings.TrimSpace(p); p != "" {
-				patterns = append(patterns, p)
-			}
+	if watchIdx < 0 {
+		return nil
+	}
+	watchStr := strings.TrimSpace(comment[watchIdx+len("watch:"):])
+	var patterns []string
+	for _, p := range strings.Split(watchStr, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			patterns = append(patterns, p)
 		}
 	}
-
-	if signalIdx >= 0 {
-		start := signalIdx + len("signal:")
-		end := len(comment)
-		if watchIdx > signalIdx {
-			end = watchIdx
-		}
-		sigStr := strings.TrimSpace(comment[start:end])
-		restartSignal = parseSignal(sigStr)
-	}
-
-	return patterns, restartSignal
-}
-
-// parseSignal converts a signal name to a syscall.Signal
-func parseSignal(name string) syscall.Signal {
-	switch strings.ToUpper(name) {
-	case "USR1", "SIGUSR1":
-		return syscall.SIGUSR1
-	case "USR2", "SIGUSR2":
-		return syscall.SIGUSR2
-	case "HUP", "SIGHUP":
-		return syscall.SIGHUP
-	case "TERM", "SIGTERM":
-		return syscall.SIGTERM
-	default:
-		return syscall.SIGINT
-	}
+	return patterns
 }
 
 // setupProcesses creates and initializes processes based on the given procDefs.
@@ -244,13 +208,11 @@ func (mgr *manager) setupProcesses(defs []procDef, procNames []string) error {
 		}
 
 		proc := &process{
-			Cmd:           exec.Command("/bin/sh", "-c", def.cmd),
 			name:          name,
 			cmdStr:        def.cmd,
 			color:         colors[i%len(colors)],
 			output:        mgr.output,
 			watchPatterns: def.watchPatterns,
-			restartSignal: def.restartSignal,
 		}
 		mgr.procs = append(mgr.procs, proc)
 	}
@@ -264,12 +226,19 @@ func (mgr *manager) setupSignalHandling() {
 	signal.Notify(mgr.interrupted, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 }
 
-// runProcess adds the process to the wait group and starts it.
+// runProcess creates a new command, starts it, and waits for it in a goroutine.
 func (mgr *manager) runProcess(proc *process) {
+	proc.cmd = exec.Command("/bin/sh", "-c", proc.cmdStr)
+	proc.cmdDone = make(chan struct{})
+
+	proc.output.pipeOutput(proc)
+
 	mgr.procWg.Add(1)
 	go func() {
 		defer mgr.procWg.Done()
-		proc.run()
+		proc.cmd.Wait()
+		proc.output.closePipe(proc)
+		close(proc.cmdDone)
 		// Only signal done for unwatched processes
 		if len(proc.watchPatterns) == 0 {
 			mgr.done <- struct{}{}
@@ -300,30 +269,23 @@ func (mgr *manager) waitForExit() {
 	}
 }
 
-// run starts the execution of the process and handles its output.
-func (proc *process) run() error {
-	proc.output.pipeOutput(proc)
-	defer proc.output.closePipe(proc)
-	return proc.Cmd.Wait()
-}
-
 // interrupt sends an interrupt signal to a running process.
 func (proc *process) interrupt() {
-	if proc.Process != nil {
+	if proc.cmd != nil && proc.cmd.Process != nil {
 		proc.signal(syscall.SIGINT)
 	}
 }
 
 // kill forcefully stops a running process.
 func (proc *process) kill() {
-	if proc.Process != nil {
+	if proc.cmd != nil && proc.cmd.Process != nil {
 		proc.signal(syscall.SIGKILL)
 	}
 }
 
 // signal sends a specified signal to the process group.
 func (proc *process) signal(sig syscall.Signal) {
-	if err := syscall.Kill(-proc.Process.Pid, sig); err != nil {
+	if err := syscall.Kill(-proc.cmd.Process.Pid, sig); err != nil {
 		proc.output.writeErr(proc, err)
 	}
 }
@@ -340,7 +302,7 @@ func (out *output) init(procs []*process) {
 
 // pipeOutput handles the output piping for a process.
 func (out *output) pipeOutput(proc *process) {
-	ptyFile, err := pty.Start(proc.Cmd)
+	ptyFile, err := pty.Start(proc.cmd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening PTY: %v\n", err)
 		os.Exit(1)
@@ -565,29 +527,20 @@ func (mgr *manager) stopWatcher() {
 }
 
 func (mgr *manager) restart(p *process) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	p.output.writeLine(p, []byte("\033[0;33mrestarting...\033[0m"))
 
-	// For hot restart signals (USR1, USR2, HUP), let the process handle its own restart
-	if p.restartSignal == syscall.SIGUSR1 || p.restartSignal == syscall.SIGUSR2 || p.restartSignal == syscall.SIGHUP {
-		p.signal(p.restartSignal)
-		return
-	}
-
-	// For other signals, do a hard restart
 	p.interrupt()
 
-	// Wait for exit with timeout
-	done := make(chan struct{})
-	go func() {
-		p.Process.Wait()
-		close(done)
-	}()
+	// Wait for process to exit
 	select {
-	case <-done:
+	case <-p.cmdDone:
 	case <-time.After(timeout):
 		p.kill()
+		<-p.cmdDone
 	}
 
-	p.Cmd = exec.Command("/bin/sh", "-c", p.cmdStr)
 	mgr.runProcess(p)
 }

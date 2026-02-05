@@ -72,8 +72,9 @@ esbuild: bun run buildwatch
 Patterns are relative to the directory containing `Procfile.dev`.
 Glob patterns support `*` (single directory) and `**` (recursive).
 Processes without a watch annotation run without file watching.
-Changes are debounced (500ms) to avoid rapid restarts.
+Changes are debounced (100ms) to avoid rapid restarts.
 On change, procman sends SIGINT, waits for the process to exit, then restarts it.
+Concurrent restarts are serialized per process to avoid races.
 
 `procman` is distributed via Go source code,
 not via a Homebrew package.
