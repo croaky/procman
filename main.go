@@ -35,7 +35,7 @@ const (
 
 var (
 	colors     = []int{2, 3, 4, 5, 6, 42, 130, 103, 129, 108}
-	procfileRe = regexp.MustCompile(`^([\w-]+):\s+(.+?)(?:\s+#\s*watch:\s*(.+))?$`)
+	procfileRe = regexp.MustCompile(`^([\w-]+):\s+(.+?)(?:\s+#\s*(.+))?$`)
 )
 
 // procDef represents a single line in the procfile, with a name and command
@@ -43,6 +43,7 @@ type procDef struct {
 	name          string
 	cmd           string
 	watchPatterns []string
+	restartSignal syscall.Signal
 }
 
 // manager handles overall process management
@@ -70,6 +71,7 @@ type process struct {
 	color         int
 	output        *output
 	watchPatterns []string
+	restartSignal syscall.Signal
 }
 
 // output manages the output display of processes
@@ -159,14 +161,11 @@ func parseProcfile(r io.Reader) ([]procDef, error) {
 		names[name] = true
 
 		var patterns []string
+		restartSignal := syscall.SIGINT // default
 		if len(params) > 3 && params[3] != "" {
-			for _, p := range strings.Split(params[3], ",") {
-				if p = strings.TrimSpace(p); p != "" {
-					patterns = append(patterns, p)
-				}
-			}
+			patterns, restartSignal = parseComment(params[3])
 		}
-		defs = append(defs, procDef{name: name, cmd: cmd, watchPatterns: patterns})
+		defs = append(defs, procDef{name: name, cmd: cmd, watchPatterns: patterns, restartSignal: restartSignal})
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -176,6 +175,59 @@ func parseProcfile(r io.Reader) ([]procDef, error) {
 		return nil, errors.New("no procDefs found in Procfile.dev")
 	}
 	return defs, nil
+}
+
+// parseComment extracts watch patterns and signal from a comment string.
+// Supports: "watch: lib/**/*.rb,ui/**/*.haml signal: USR2"
+func parseComment(comment string) ([]string, syscall.Signal) {
+	var patterns []string
+	restartSignal := syscall.SIGINT
+
+	// Find watch: section
+	watchIdx := strings.Index(comment, "watch:")
+	signalIdx := strings.Index(comment, "signal:")
+
+	if watchIdx >= 0 {
+		start := watchIdx + len("watch:")
+		end := len(comment)
+		if signalIdx > watchIdx {
+			end = signalIdx
+		}
+		watchStr := strings.TrimSpace(comment[start:end])
+		for _, p := range strings.Split(watchStr, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				patterns = append(patterns, p)
+			}
+		}
+	}
+
+	if signalIdx >= 0 {
+		start := signalIdx + len("signal:")
+		end := len(comment)
+		if watchIdx > signalIdx {
+			end = watchIdx
+		}
+		sigStr := strings.TrimSpace(comment[start:end])
+		restartSignal = parseSignal(sigStr)
+	}
+
+	return patterns, restartSignal
+}
+
+// parseSignal converts a signal name to a syscall.Signal
+func parseSignal(name string) syscall.Signal {
+	switch strings.ToUpper(name) {
+	case "USR1", "SIGUSR1":
+		return syscall.SIGUSR1
+	case "USR2", "SIGUSR2":
+		return syscall.SIGUSR2
+	case "HUP", "SIGHUP":
+		return syscall.SIGHUP
+	case "TERM", "SIGTERM":
+		return syscall.SIGTERM
+	default:
+		return syscall.SIGINT
+	}
 }
 
 // setupProcesses creates and initializes processes based on the given procDefs.
@@ -198,6 +250,7 @@ func (mgr *manager) setupProcesses(defs []procDef, procNames []string) error {
 			color:         colors[i%len(colors)],
 			output:        mgr.output,
 			watchPatterns: def.watchPatterns,
+			restartSignal: def.restartSignal,
 		}
 		mgr.procs = append(mgr.procs, proc)
 	}
@@ -513,6 +566,14 @@ func (mgr *manager) stopWatcher() {
 
 func (mgr *manager) restart(p *process) {
 	p.output.writeLine(p, []byte("\033[0;33mrestarting...\033[0m"))
+
+	// For hot restart signals (USR1, USR2, HUP), let the process handle its own restart
+	if p.restartSignal == syscall.SIGUSR1 || p.restartSignal == syscall.SIGUSR2 || p.restartSignal == syscall.SIGHUP {
+		p.signal(p.restartSignal)
+		return
+	}
+
+	// For other signals, do a hard restart
 	p.interrupt()
 
 	// Wait for exit with timeout

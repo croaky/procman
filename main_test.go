@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -83,8 +84,8 @@ func TestParseProcfile(t *testing.T) {
 			name:    "Valid procfile",
 			content: "web: npm start\nworker: npm run worker",
 			want: []procDef{
-				{name: "web", cmd: "npm start"},
-				{name: "worker", cmd: "npm run worker"},
+				{name: "web", cmd: "npm start", restartSignal: syscall.SIGINT},
+				{name: "worker", cmd: "npm run worker", restartSignal: syscall.SIGINT},
 			},
 			wantErr: false,
 		},
@@ -110,7 +111,7 @@ func TestParseProcfile(t *testing.T) {
 			name:    "With watch patterns",
 			content: "web: bundle exec ruby cmd/web.rb  # watch: lib/**/*.rb,ui/**/*.haml",
 			want: []procDef{
-				{name: "web", cmd: "bundle exec ruby cmd/web.rb", watchPatterns: []string{"lib/**/*.rb", "ui/**/*.haml"}},
+				{name: "web", cmd: "bundle exec ruby cmd/web.rb", watchPatterns: []string{"lib/**/*.rb", "ui/**/*.haml"}, restartSignal: syscall.SIGINT},
 			},
 			wantErr: false,
 		},
@@ -118,8 +119,24 @@ func TestParseProcfile(t *testing.T) {
 			name:    "Mixed with and without watch",
 			content: "web: ruby web.rb  # watch: *.rb\nesbuild: bun build",
 			want: []procDef{
-				{name: "web", cmd: "ruby web.rb", watchPatterns: []string{"*.rb"}},
-				{name: "esbuild", cmd: "bun build"},
+				{name: "web", cmd: "ruby web.rb", watchPatterns: []string{"*.rb"}, restartSignal: syscall.SIGINT},
+				{name: "esbuild", cmd: "bun build", restartSignal: syscall.SIGINT},
+			},
+			wantErr: false,
+		},
+		{
+			name:    "With signal option",
+			content: "web: bundle exec puma  # watch: lib/**/*.rb signal: USR2",
+			want: []procDef{
+				{name: "web", cmd: "bundle exec puma", watchPatterns: []string{"lib/**/*.rb"}, restartSignal: syscall.SIGUSR2},
+			},
+			wantErr: false,
+		},
+		{
+			name:    "Multiple patterns with signal",
+			content: "web: bundle exec puma  # watch: lib/**/*.rb,ui/**/*.haml signal: USR2",
+			want: []procDef{
+				{name: "web", cmd: "bundle exec puma", watchPatterns: []string{"lib/**/*.rb", "ui/**/*.haml"}, restartSignal: syscall.SIGUSR2},
 			},
 			wantErr: false,
 		},
