@@ -88,6 +88,9 @@ not via a Homebrew package.
 ## Developing
 
 ```bash
+# setup (one time after clone)
+git config core.hooksPath bin
+
 # checks
 goimports -local "$(go list -m)" -w .
 go vet ./...
