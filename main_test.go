@@ -374,6 +374,7 @@ func TestRestartOnFileChange(t *testing.T) {
 				return
 			}
 		}
+		_ = sc.Err()
 	}()
 
 	// Trigger a change by modifying the existing file

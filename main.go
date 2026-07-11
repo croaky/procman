@@ -120,7 +120,7 @@ func parseArgs(args []string) ([]string, error) {
 		return nil, fmt.Errorf("no processes given as arguments")
 	}
 	var procNames []string
-	for _, s := range strings.Split(args[1], ",") {
+	for s := range strings.SplitSeq(args[1], ",") {
 		if s = strings.TrimSpace(s); s != "" {
 			procNames = append(procNames, s)
 		}
@@ -180,13 +180,13 @@ func parseProcfile(r io.Reader) ([]procDef, error) {
 // parseWatchPatterns extracts watch patterns from a comment string.
 // Example: "watch: lib/**/*.rb,ui/**/*.haml"
 func parseWatchPatterns(comment string) []string {
-	watchIdx := strings.Index(comment, "watch:")
-	if watchIdx < 0 {
+	_, after, found := strings.Cut(comment, "watch:")
+	if !found {
 		return nil
 	}
-	watchStr := strings.TrimSpace(comment[watchIdx+len("watch:"):])
+	watchStr := strings.TrimSpace(after)
 	var patterns []string
-	for _, p := range strings.Split(watchStr, ",") {
+	for p := range strings.SplitSeq(watchStr, ",") {
 		if p = strings.TrimSpace(p); p != "" {
 			patterns = append(patterns, p)
 		}
@@ -233,9 +233,7 @@ func (mgr *manager) runProcess(proc *process) {
 
 	proc.output.pipeOutput(proc)
 
-	mgr.procWg.Add(1)
-	go func() {
-		defer mgr.procWg.Done()
+	mgr.procWg.Go(func() {
 		proc.cmd.Wait()
 		proc.output.closePipe(proc)
 		close(proc.cmdDone)
@@ -243,7 +241,7 @@ func (mgr *manager) runProcess(proc *process) {
 		if len(proc.watchPatterns) == 0 {
 			mgr.done <- struct{}{}
 		}
-	}()
+	})
 }
 
 // waitForExit waits for all processes to exit or for an interruption signal.
@@ -338,7 +336,7 @@ func (out *output) closePipe(proc *process) {
 // writeLine writes a line of output for the specified process, with color formatting.
 func (out *output) writeLine(proc *process, p []byte) {
 	var buf bytes.Buffer
-	buf.WriteString(fmt.Sprintf("\033[1;38;5;%vm", proc.color))
+	fmt.Fprintf(&buf, "\033[1;38;5;%vm", proc.color)
 	buf.WriteString(proc.name)
 	for i := len(proc.name); i <= out.maxNameLength; i++ {
 		buf.WriteByte(' ')
@@ -354,7 +352,7 @@ func (out *output) writeLine(proc *process, p []byte) {
 
 // writeErr writes an error message for the specified process.
 func (out *output) writeErr(proc *process, err error) {
-	out.writeLine(proc, []byte(fmt.Sprintf("\033[0;31m%v\033[0m", err)))
+	out.writeLine(proc, fmt.Appendf(nil, "\033[0;31m%v\033[0m", err))
 }
 
 // setupWatchers creates a single watcher for all processes with watch patterns.
@@ -426,8 +424,8 @@ func (mgr *manager) setupWatchers() {
 		return
 	}
 	if len(mgr.procs) > 0 {
-		mgr.procs[0].output.writeLine(mgr.procs[0], []byte(fmt.Sprintf(
-			"\033[0;90mwatching %d dirs (setup %v)\033[0m", count, time.Since(start).Round(time.Millisecond))))
+		mgr.procs[0].output.writeLine(mgr.procs[0], fmt.Appendf(nil,
+			"\033[0;90mwatching %d dirs (setup %v)\033[0m", count, time.Since(start).Round(time.Millisecond)))
 	}
 	go mgr.watchLoop()
 }
@@ -440,9 +438,9 @@ type ignoreRules struct {
 }
 
 type ignoreRule struct {
-	pattern string // anchored, leading slash stripped
-	anchored bool // pattern was rooted with a leading slash
-	negate  bool
+	pattern  string // anchored, leading slash stripped
+	anchored bool   // pattern was rooted with a leading slash
+	negate   bool
 }
 
 // loadIgnoreRules reads a .gitignore file. A missing file yields rules
@@ -475,6 +473,7 @@ func loadIgnoreRules(path string) *ignoreRules {
 		}
 		ig.rules = append(ig.rules, r)
 	}
+	_ = scanner.Err()
 	return ig
 }
 
