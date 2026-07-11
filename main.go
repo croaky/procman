@@ -382,6 +382,8 @@ func (mgr *manager) setupWatchers() {
 	mgr.watchStopCh = make(chan struct{})
 	mgr.watchTimers = make(map[*process]*time.Timer)
 
+	start := time.Now()
+	ignore := loadIgnoreRules(".gitignore")
 	dirs := make(map[string]bool)
 	for _, proc := range mgr.procs {
 		for _, pattern := range proc.watchPatterns {
@@ -399,6 +401,9 @@ func (mgr *manager) setupWatchers() {
 					return nil
 				}
 				if d.IsDir() {
+					if ignore.skip(path) {
+						return filepath.SkipDir
+					}
 					dirs[path] = true
 				}
 				return nil
@@ -420,7 +425,85 @@ func (mgr *manager) setupWatchers() {
 		mgr.fsw = nil
 		return
 	}
+	if len(mgr.procs) > 0 {
+		mgr.procs[0].output.writeLine(mgr.procs[0], []byte(fmt.Sprintf(
+			"\033[0;90mwatching %d dirs (setup %v)\033[0m", count, time.Since(start).Round(time.Millisecond))))
+	}
 	go mgr.watchLoop()
+}
+
+// ignoreRules holds ordered .gitignore-style rules. Later rules win,
+// so a negation (!pattern) can re-include a previously ignored path.
+// It always skips .git.
+type ignoreRules struct {
+	rules []ignoreRule
+}
+
+type ignoreRule struct {
+	pattern string // anchored, leading slash stripped
+	anchored bool // pattern was rooted with a leading slash
+	negate  bool
+}
+
+// loadIgnoreRules reads a .gitignore file. A missing file yields rules
+// that still skip .git and common heavy dirs so the watcher stays cheap.
+func loadIgnoreRules(path string) *ignoreRules {
+	ig := &ignoreRules{}
+	file, err := os.Open(path)
+	if err != nil {
+		return ig
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		r := ignoreRule{}
+		if strings.HasPrefix(line, "!") {
+			r.negate = true
+			line = line[1:]
+		}
+		if strings.HasPrefix(line, "/") {
+			r.anchored = true
+			line = line[1:]
+		}
+		r.pattern = strings.TrimSuffix(line, "/")
+		if r.pattern == "" {
+			continue
+		}
+		ig.rules = append(ig.rules, r)
+	}
+	return ig
+}
+
+// skip reports whether a directory path should be pruned from the walk.
+// path is relative to the walk root (and thus the repo root).
+func (ig *ignoreRules) skip(path string) bool {
+	clean := filepath.ToSlash(filepath.Clean(path))
+	base := filepath.Base(clean)
+	if base == ".git" {
+		return true
+	}
+	ignored := false
+	for _, r := range ig.rules {
+		var matched bool
+		if r.anchored {
+			matched, _ = doublestar.Match(r.pattern, clean)
+		} else {
+			// Unanchored: match any path segment, as git does.
+			if m, _ := doublestar.Match(r.pattern, base); m {
+				matched = true
+			} else {
+				matched, _ = doublestar.Match(r.pattern, clean)
+			}
+		}
+		if matched {
+			ignored = !r.negate
+		}
+	}
+	return ignored
 }
 
 func nonGlobBaseDir(pattern string) string {
