@@ -71,6 +71,8 @@ esbuild: bun run buildwatch
 
 Patterns are relative to the directory containing `Procfile.dev`.
 Glob patterns support `*` (single directory) and `**` (recursive).
+Directories matched by `.gitignore` (and `.git`) are pruned, so heavy
+trees like `node_modules` and build output don't consume watch descriptors.
 Processes without a watch annotation run without file watching.
 Changes are debounced (100ms) to avoid rapid restarts.
 On change, procman sends SIGINT, waits for the process to exit, then restarts it.
@@ -96,6 +98,7 @@ goimports -local "$(go list -m)" -w .
 go vet ./...
 go test ./...
 deadcode -test ./...
+gopls check -severity=hint ./*.go
 
 # commit
 git add -A
