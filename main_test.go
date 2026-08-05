@@ -7,10 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/croaky/is"
 )
 
 func TestMain(m *testing.M) {
@@ -60,14 +61,16 @@ func TestParseArgs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			is := is.NewRelaxed(t)
+
 			got, err := parseArgs(tt.args)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("parseArgs() error = %v, wantErr %v", err, tt.wantErr)
-				return
+
+			if tt.wantErr {
+				is.HasErr(err)
+			} else {
+				is.NoErr(err)
 			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("parseArgs() = %v, want %v", got, tt.want)
-			}
+			is.Eq(got, tt.want)
 		})
 	}
 }
@@ -127,16 +130,16 @@ func TestParseProcfile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			is := is.NewRelaxed(t)
+
 			got, err := parseProcfile(strings.NewReader(tt.content))
 
-			if (err != nil) != tt.wantErr {
-				t.Errorf("parseProcfile() error = %v, wantErr %v", err, tt.wantErr)
-				return
+			if tt.wantErr {
+				is.HasErr(err)
+			} else {
+				is.NoErr(err)
 			}
-
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("parseProcfile() = %v, want %v", got, tt.want)
-			}
+			is.Eq(got, tt.want)
 		})
 	}
 }
@@ -169,40 +172,45 @@ func TestSetupProcesses(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			is := is.New(t)
+
 			mgr := manager{output: &output{}}
 			err := mgr.setupProcesses(tt.defs, tt.procNames)
 
-			if (err != nil) != tt.wantError {
-				t.Errorf("setupProcesses() error = %v, wantError %v", err, tt.wantError)
+			if tt.wantError {
+				is.HasErr(err)
+			} else {
+				is.NoErr(err)
 			}
 		})
 	}
 }
 
 func TestSetupSignalHandling(t *testing.T) {
+	is := is.New(t)
+
 	mgr := manager{output: &output{}, procs: make([]*process, 2)}
 	mgr.setupSignalHandling()
 
-	if mgr.done == nil || mgr.interrupted == nil {
-		t.Errorf("setupSignalHandling did not initialize channels correctly")
-	}
+	is.NotNil(mgr.done)
+	is.NotNil(mgr.interrupted)
 }
 
 func TestInit(t *testing.T) {
+	is := is.New(t)
+
 	out := &output{}
 	procs := []*process{{name: "testProcess"}}
 
 	out.init(procs)
 
-	if out.maxNameLength != len(procs[0].name) {
-		t.Errorf("Expected maxNameLength to be %d, got %d", len(procs[0].name), out.maxNameLength)
-	}
-	if out.pipes == nil {
-		t.Errorf("Expected pipes to be initialized")
-	}
+	is.Eq(out.maxNameLength, len(procs[0].name))
+	is.NotNil(out.pipes)
 }
 
 func TestWriteLine(t *testing.T) {
+	is := is.New(t)
+
 	out := &output{maxNameLength: 11} // Length of "testProcess"
 	proc := &process{name: "testProcess", color: 31}
 
@@ -217,15 +225,15 @@ func TestWriteLine(t *testing.T) {
 	os.Stdout = originalStdout
 
 	var buf bytes.Buffer
-	buf.ReadFrom(r)
+	_, err := buf.ReadFrom(r)
+	is.NoErr(err)
 
-	expected := "\033[1;38;5;31mtestProcess \033[0m| Hello world\n"
-	if got := buf.String(); got != expected {
-		t.Errorf("Expected output %q, got %q", expected, got)
-	}
+	is.Eq(buf.String(), "\033[1;38;5;31mtestProcess \033[0m| Hello world\n")
 }
 
 func TestWriteErr(t *testing.T) {
+	is := is.New(t)
+
 	out := &output{maxNameLength: 11}
 	proc := &process{name: "testProcess", color: 31}
 	testErr := fmt.Errorf("test error")
@@ -240,12 +248,10 @@ func TestWriteErr(t *testing.T) {
 	os.Stdout = originalStdout
 
 	var buf bytes.Buffer
-	buf.ReadFrom(r)
+	_, err := buf.ReadFrom(r)
+	is.NoErr(err)
 
-	expected := "\033[1;38;5;31mtestProcess \033[0m| \033[0;31mtest error\033[0m\n"
-	if got := buf.String(); got != expected {
-		t.Errorf("Expected output %q, got %q", expected, got)
-	}
+	is.Eq(buf.String(), "\033[1;38;5;31mtestProcess \033[0m| \033[0;31mtest error\033[0m\n")
 }
 
 func TestMatchesPattern(t *testing.T) {
@@ -301,58 +307,49 @@ func TestMatchesPattern(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			is := is.New(t)
+
 			mgr := &manager{watchDir: ""} // empty means path is already relative
-			if got := mgr.matchPatterns(tt.patterns, tt.path); got != tt.want {
-				t.Errorf("matchesPattern(%q) = %v, want %v", tt.path, got, tt.want)
-			}
+			got := mgr.matchPatterns(tt.patterns, tt.path)
+
+			is.Eq(got, tt.want)
 		})
 	}
 }
+
 func TestProcmanIntegration(t *testing.T) {
+	is := is.New(t)
+
 	content := "echo: echo 'hello'\nsleep: sleep 10"
-	if err := os.WriteFile("Procfile.dev", []byte(content), 0644); err != nil {
-		t.Fatalf("Failed to create mock Procfile.dev: %v", err)
-	}
+	is.NoErr(os.WriteFile("Procfile.dev", []byte(content), 0644))
 	defer os.Remove("Procfile.dev")
 
 	cmd := exec.Command("./procman", "echo,sleep")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("Failed to start procman: %v", err)
-	}
+	is.NoErr(cmd.Start())
 
 	time.Sleep(1 * time.Second)
 
-	if err := cmd.Process.Signal(os.Interrupt); err != nil {
-		t.Fatalf("Failed to send SIGINT to procman: %v", err)
-	}
-
-	if err := cmd.Wait(); err != nil {
-		t.Fatalf("procman did not exit cleanly: %v", err)
-	}
+	is.NoErr(cmd.Process.Signal(os.Interrupt))
+	is.NoErr(cmd.Wait())
 }
 
 func TestRestartOnFileChange(t *testing.T) {
+	is := is.New(t)
+
 	dir := t.TempDir()
 	procfile := "echo: echo run; sleep 5  # watch: *.rb\n"
-	if err := os.WriteFile(filepath.Join(dir, "Procfile.dev"), []byte(procfile), 0644); err != nil {
-		t.Fatalf("write procfile: %v", err)
-	}
+	is.NoErr(os.WriteFile(filepath.Join(dir, "Procfile.dev"), []byte(procfile), 0644))
 	// Create an initial .rb file so the watcher has something to watch
-	if err := os.WriteFile(filepath.Join(dir, "init.rb"), []byte(""), 0644); err != nil {
-		t.Fatalf("create init.rb: %v", err)
-	}
+	is.NoErr(os.WriteFile(filepath.Join(dir, "init.rb"), []byte(""), 0644))
 
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	is.NoErr(err)
 	exe := filepath.Join(cwd, "procman")
 	cmd := exec.Command(exe, "echo")
 	cmd.Dir = dir
 	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("StdoutPipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start procman: %v", err)
-	}
+	is.NoErr(err)
+	is.NoErr(cmd.Start())
 	defer func() {
 		_ = cmd.Process.Signal(os.Interrupt)
 		done := make(chan error, 1)
@@ -379,9 +376,7 @@ func TestRestartOnFileChange(t *testing.T) {
 
 	// Trigger a change by modifying the existing file
 	time.Sleep(500 * time.Millisecond)
-	if err := os.WriteFile(filepath.Join(dir, "init.rb"), []byte("puts :x\n"), 0644); err != nil {
-		t.Fatalf("modify file: %v", err)
-	}
+	is.NoErr(os.WriteFile(filepath.Join(dir, "init.rb"), []byte("puts :x\n"), 0644))
 
 	select {
 	case <-restarted:
