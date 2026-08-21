@@ -71,8 +71,11 @@ esbuild: bun run buildwatch
 
 Patterns are relative to the directory containing `Procfile.dev`.
 Glob patterns support `*` (single directory) and `**` (recursive).
-Directories matched by `.gitignore` (and `.git`) are pruned, so heavy
-trees like `node_modules` and build output don't consume watch descriptors.
+Directories matched by `.gitignore` are pruned, so build output doesn't
+consume watch descriptors. `.git` and `node_modules` are pruned whether
+or not `.gitignore` names them: a project that has stopped building with
+npm drops the entry and leaves the tree on disk, and watching it costs
+descriptors and, if anything in it is a stale symlink, an error.
 Processes without a watch annotation run without file watching.
 Changes are debounced (100ms) to avoid rapid restarts.
 On change, procman sends SIGINT, waits for the process to exit, then restarts it.

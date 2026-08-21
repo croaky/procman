@@ -315,7 +315,10 @@ func (out *output) pipeOutput(proc *process) {
 		for scanner.Scan() {
 			out.writeLine(proc, scanner.Bytes())
 		}
-		if err := scanner.Err(); err != nil && !errors.Is(err, os.ErrClosed) {
+		// EIO is how the master side of a pty reports that the child
+		// closed the slave, which is every process exiting normally.
+		if err := scanner.Err(); err != nil &&
+			!errors.Is(err, os.ErrClosed) && !errors.Is(err, syscall.EIO) {
 			out.writeErr(proc, err)
 		}
 	}()
@@ -391,7 +394,9 @@ func (mgr *manager) setupWatchers() {
 				continue
 			}
 			for _, m := range matches {
-				dirs[filepath.Dir(m)] = true
+				if dir := filepath.Dir(m); !ignore.skip(dir) {
+					dirs[dir] = true
+				}
 			}
 			base := nonGlobBaseDir(pattern)
 			_ = filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
@@ -430,9 +435,23 @@ func (mgr *manager) setupWatchers() {
 	go mgr.watchLoop()
 }
 
+// alwaysSkip are directories pruned whatever .gitignore says, since
+// neither holds source and a watch on either buys nothing.
+//
+// node_modules is here because .gitignore is the wrong thing to read it
+// out of: a project that has stopped building with npm drops the entry
+// and leaves the tree on disk, which is when the walk finds it. One
+// left over that way cost a watch a hundred megabytes of descriptors
+// and a spurious error, since kqueue opens every file in a directory it
+// watches and a stale .bin symlink pointed at nothing.
+var alwaysSkip = map[string]bool{
+	".git":         true,
+	"node_modules": true,
+}
+
 // ignoreRules holds ordered .gitignore-style rules. Later rules win,
 // so a negation (!pattern) can re-include a previously ignored path.
-// It always skips .git.
+// It always skips alwaysSkip.
 type ignoreRules struct {
 	rules []ignoreRule
 }
@@ -444,7 +463,8 @@ type ignoreRule struct {
 }
 
 // loadIgnoreRules reads a .gitignore file. A missing file yields rules
-// that still skip .git and common heavy dirs so the watcher stays cheap.
+// that still skip alwaysSkip, so the watcher stays cheap in a directory
+// under no version control at all.
 func loadIgnoreRules(path string) *ignoreRules {
 	ig := &ignoreRules{}
 	file, err := os.Open(path)
@@ -482,7 +502,7 @@ func loadIgnoreRules(path string) *ignoreRules {
 func (ig *ignoreRules) skip(path string) bool {
 	clean := filepath.ToSlash(filepath.Clean(path))
 	base := filepath.Base(clean)
-	if base == ".git" {
+	if alwaysSkip[base] {
 		return true
 	}
 	ignored := false
@@ -526,6 +546,9 @@ func (mgr *manager) matchPatterns(patterns []string, path string) bool {
 			path = rel
 		}
 	}
+	// A watch on "." names its files "./x" under inotify and "x" under
+	// kqueue, and "*.rb" matches only the second.
+	path = filepath.Clean(path)
 	for _, pattern := range patterns {
 		matched, err := doublestar.Match(pattern, path)
 		if err != nil {

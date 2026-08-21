@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -303,6 +304,13 @@ func TestMatchesPattern(t *testing.T) {
 			path:     "ui/views/index.haml",
 			want:     true,
 		},
+		{
+			// A watch on "." names its files this way under inotify.
+			name:     "Dot-slash prefix match",
+			patterns: []string{"*.rb"},
+			path:     "./app.rb",
+			want:     true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -313,6 +321,68 @@ func TestMatchesPattern(t *testing.T) {
 			got := mgr.matchPatterns(tt.patterns, tt.path)
 
 			is.Eq(got, tt.want)
+		})
+	}
+}
+
+func TestIgnoreRulesSkip(t *testing.T) {
+	tests := []struct {
+		name      string
+		gitignore string
+		path      string
+		want      bool
+	}{
+		{
+			name: ".git is always pruned",
+			path: ".git",
+			want: true,
+		},
+		{
+			name: "node_modules is pruned unnamed",
+			path: "node_modules",
+			want: true,
+		},
+		{
+			name: "nested node_modules is pruned",
+			path: "ui/node_modules",
+			want: true,
+		},
+		{
+			name:      "source is kept",
+			gitignore: "tmp\n",
+			path:      "lib/models",
+			want:      false,
+		},
+		{
+			name:      "unanchored rule matches any segment",
+			gitignore: "tmp\n",
+			path:      "lib/tmp",
+			want:      true,
+		},
+		{
+			name:      "anchored rule matches only at root",
+			gitignore: "/tmp\n",
+			path:      "lib/tmp",
+			want:      false,
+		},
+		{
+			name:      "negation re-includes",
+			gitignore: "build\n!build/keep\n",
+			path:      "build/keep",
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := is.New(t)
+
+			path := filepath.Join(t.TempDir(), ".gitignore")
+			if tt.gitignore != "" {
+				is.NoErr(os.WriteFile(path, []byte(tt.gitignore), 0644))
+			}
+
+			is.Eq(loadIgnoreRules(path).skip(tt.path), tt.want)
 		})
 	}
 }
@@ -363,10 +433,25 @@ func TestRestartOnFileChange(t *testing.T) {
 	}()
 
 	sc := bufio.NewScanner(stdout)
+	watching := make(chan struct{})
 	restarted := make(chan struct{})
+	var mu sync.Mutex
+	var lines []string
+	seen := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.Join(lines, "\n")
+	}
 	go func() {
 		for sc.Scan() {
-			if strings.Contains(sc.Text(), "restarting...") {
+			line := sc.Text()
+			mu.Lock()
+			lines = append(lines, line)
+			mu.Unlock()
+			if strings.Contains(line, "watching ") {
+				close(watching)
+			}
+			if strings.Contains(line, "restarting...") {
 				close(restarted)
 				return
 			}
@@ -374,13 +459,22 @@ func TestRestartOnFileChange(t *testing.T) {
 		_ = sc.Err()
 	}()
 
+	// Wait for the watch to exist before writing. A write that lands
+	// first produces no event and nothing writes again, so a sleep here
+	// is a guess at how long a loaded box takes to walk the tree, and
+	// the test fails for the one reason it is not looking for.
+	select {
+	case <-watching:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timeout waiting for watcher setup; procman said:\n%s", seen())
+	}
+
 	// Trigger a change by modifying the existing file
-	time.Sleep(500 * time.Millisecond)
 	is.NoErr(os.WriteFile(filepath.Join(dir, "init.rb"), []byte("puts :x\n"), 0644))
 
 	select {
 	case <-restarted:
-	case <-time.After(4 * time.Second):
-		t.Fatal("timeout waiting for restart")
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timeout waiting for restart; procman said:\n%s", seen())
 	}
 }
