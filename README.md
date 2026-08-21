@@ -108,6 +108,12 @@ git add -A
 git commit -m "proc: add new feature" # commit with prefix, imperative mood, hard-wrap 72 cols
 ```
 
+## GitHub repo is a mirror
+
+Development happens on [cibot](https://dancroak.com/cmd/cibot/), a
+self-hosted review and CI server, which holds in progress branches.
+GitHub receives `main` and the tags so `go install` works.
+
 ## License
 
 MIT
