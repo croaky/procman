@@ -3,6 +3,34 @@
 procman runs the processes in `Procfile.dev` for local development and
 combines their output. See `README.md` for the surface.
 
+## Writing
+
+Write every word in ASD-STE100 Simplified Technical English (STE):
+Markdown docs, code comments, commit messages, and replies in an agent
+conversation. See
+<https://en.wikipedia.org/wiki/Simplified_Technical_English>.
+
+STE is a controlled English for technical writing: one meaning per
+word, one idea per sentence, and the actor named. It is not a house
+style. It exists so a reader who is tired, or reading a second
+language, or an agent matching on words, all read the same sentence the
+same way.
+
+- One idea per sentence. Keep an instruction to 20 words and a
+  description to 25.
+- Active voice, present tense, and the actor named: say what acts,
+  rather than writing "the token is refused".
+- One word, one meaning. Keep a term the same everywhere rather than
+  varying it for tone.
+- Use the simple verb, not a noun made from it: "run the formatter",
+  not "perform execution of the formatter".
+- Cut what carries nothing: "simply", "just", "note that", "in order
+  to".
+- Put a warning or a limit before the step it applies to.
+
+Apply it to prose, not to code: an identifier, a command, and a quoted
+error message stay as they are.
+
 ## Architecture
 
 One package at the repo root. `main.go` holds all of it: parsing the
