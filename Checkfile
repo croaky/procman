@@ -16,3 +16,18 @@ lint: out=$(goimports -local "$(go list -m)" -l .); if [ -n "$out" ]; then echo 
 # its output is the verdict: awk prints what it read, then fails if it
 # read a line.
 hints: git ls-files -z '*.go' | xargs -0 gopls check -severity=hint | awk '1; END { exit (NR > 0) }'
+
+# procman is a binary, not a library, so nothing outside it calls in and
+# an unreachable function is dead. deadcode exits 0 whatever it found,
+# so awk prints what it read, then fails if it read a line.
+deadcode: deadcode -test ./... 2>&1 | awk '1; END { exit (NR > 0) }'
+
+# dprint holds the Markdown to one width, so a doc edit produces a diff
+# of what changed and not of where the lines now wrap. Markdown is the
+# only language dprint.json loads a plugin for.
+fmt: dprint check
+
+# The pre-push hook is the only shell here, and it is the file a clone
+# runs on every push, so a quoting bug in it fails a push and not a
+# test.
+shellcheck: git ls-files -z '*.sh' 'bin/*' | xargs -0 shellcheck

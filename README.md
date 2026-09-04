@@ -52,8 +52,10 @@ web     | [67296] - Worker 0 (PID: 67330) booted in 0.9s, phase: 0
 `procman` will run its processes until it receives a SIGINT (`Ctrl+C`),
 `SIGTERM`, or `SIGHUP`.
 
-If one of the processes finishes, it will send a `SIGINT` to all remaining
-running processes, wait 5s, and then send a `SIGKILL` to all remaining processes.
+If a process without a watch annotation finishes, `procman` sends a `SIGINT`
+to all remaining running processes, waits 5s, and then sends a `SIGKILL` to
+all remaining processes. A process with a watch annotation does not start
+this shutdown when it exits.
 
 `procman` runs exactly one process per definition.
 
@@ -92,21 +94,14 @@ not via a Homebrew package.
 
 ## Developing
 
+Install the pre-push hook once after a clone:
+
 ```bash
-# setup (one time after clone)
 git config core.hooksPath bin
-
-# checks
-goimports -local "$(go list -m)" -w .
-go vet ./...
-go test ./...
-deadcode -test ./...
-gopls check -severity=hint ./*.go
-
-# commit
-git add -A
-git commit -m "proc: add new feature" # commit with prefix, imperative mood, hard-wrap 72 cols
 ```
+
+`Checkfile` lists the checks CI runs. `AGENTS.md` gives the commands to
+run before a commit, and the commit message rules.
 
 ## GitHub repo is a mirror
 

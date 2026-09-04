@@ -63,8 +63,7 @@ test go away.
 ## Checks
 
 The root `Checkfile` is the list, and CI runs it on every push. Run the
-same things before committing, plus `deadcode`, which the pre-push hook
-runs and CI does not:
+same things before committing:
 
 ```sh
 goimports -local "$(go list -m)" -w .
@@ -72,13 +71,16 @@ go vet ./...
 go test -trimpath -buildvcs=false -race -cover ./...
 deadcode -test ./...
 git ls-files -z '*.go' | xargs -0 gopls check -severity=hint
+dprint fmt
+git ls-files -z '*.sh' 'bin/*' | xargs -0 shellcheck
 ```
 
 Install the hook once per clone with `git config core.hooksPath bin`.
+The hook runs the Go checks, and only when the push carries a Go file.
 
 ## Tests
 
-The integration tests start the real binary, so they wait on output
+`TestRestartOnFileChange` starts the real binary, so it waits on output
 rather than on the clock. procman prints `watching N dirs` when the watch
 is up and `restarting...` when it acts on an event; scan for the line.
 
