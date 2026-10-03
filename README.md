@@ -105,7 +105,7 @@ run before a commit, and the commit message rules.
 
 ## GitHub repo is a mirror
 
-Development happens on [cibot](https://dancroak.com/cmd/cibot/), a
+Development happens on [sockeye](https://sockeye.sh), a
 self-hosted review and CI server, which holds in progress branches.
 GitHub receives `main` and the tags so `go install` works.
 

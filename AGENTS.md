@@ -51,7 +51,7 @@ visible on one.
 
 - fsnotify names an event under a watch on `.` as `./x` on inotify and
   `x` on kqueue, so a pattern like `*.rb` matched on a Mac and not on a
-  worker. `matchPatterns` cleans the path.
+  runner. `matchPatterns` cleans the path.
 - Reading the master side of a pty returns `EIO` when the child closes
   the slave, which is every process exiting. Linux reports it, macOS does
   not, and procman was printing it as an error.
@@ -66,10 +66,10 @@ The root `Checkfile` is the list, and CI runs it on every push. Run the
 same things before committing:
 
 ```sh
-goimports -local "$(go list -m)" -w .
+go run golang.org/x/tools/cmd/goimports@v0.45.0 -local "$(go list -m)" -w .
 go vet ./...
 go test -trimpath -buildvcs=false -race -cover ./...
-deadcode -test ./...
+go run golang.org/x/tools/cmd/deadcode@v0.45.0 -test ./...
 git ls-files -z '*.go' | xargs -0 gopls check -severity=hint
 dprint fmt
 git ls-files -z '*.sh' 'bin/*' | xargs -0 shellcheck
@@ -100,8 +100,8 @@ procman said. A timeout with no output is a second run to learn anything.
 
 ## Changes
 
-Work happens on a cibot change: `cibot checkout` allocates one and
-prints a worktree. After a push, read the checks with `git push && cibot
-show --wait` rather than sleeping and then reading. A `cibot show` that
+Work happens on a sockeye change: `soc checkout` allocates one and
+prints a worktree. After a push, read the checks with `git push && soc
+show --wait` rather than sleeping and then reading. A `soc show` that
 lands before the push is recorded reports the previous commit's checks,
 green, about the wrong code.
