@@ -318,10 +318,66 @@ func TestMatchesPattern(t *testing.T) {
 			is := is.New(t)
 
 			mgr := &manager{watchDir: ""} // empty means path is already relative
-			got := mgr.matchPatterns(tt.patterns, tt.path)
+			got := mgr.matchPatterns(tt.patterns, mgr.relPath(tt.path))
 
 			is.Eq(got, tt.want)
 		})
+	}
+}
+
+// watchTree makes a tree under a temporary directory, changes to it,
+// and returns its directories in the order it made them.
+func watchTree(t testing.TB, width int) []string {
+	t.Chdir(t.TempDir())
+	dirs := []string{"."}
+	for i := range width {
+		for j := range width {
+			dir := filepath.Join(fmt.Sprintf("d%d", i), fmt.Sprintf("e%d", j))
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "a.go"), nil, 0644); err != nil {
+				t.Fatal(err)
+			}
+			if j == 0 {
+				dirs = append(dirs, filepath.Dir(dir))
+			}
+			dirs = append(dirs, dir)
+		}
+	}
+	return dirs
+}
+
+func TestWatchDirs(t *testing.T) {
+	is := is.New(t)
+
+	tree := watchTree(t, 2)
+	is.NoErr(os.MkdirAll("tmp/cache", 0755))
+	is.NoErr(os.WriteFile("tmp/cache/a.go", nil, 0644))
+
+	procs := []*process{
+		{name: "web", watchPatterns: []string{"**/*.go", "**/*.hml"}},
+		{name: "worker", watchPatterns: []string{"d0/**/*.go"}},
+	}
+	got := watchDirs(procs, &ignoreRules{rules: []ignoreRule{{pattern: "tmp"}}})
+
+	// The walk prunes tmp, but the glob still finds a match under it.
+	want := map[string]bool{"tmp/cache": true}
+	for _, d := range tree {
+		want[d] = true
+	}
+	is.Eq(got, want)
+}
+
+func BenchmarkWatchDirs(b *testing.B) {
+	watchTree(b, 10)
+	procs := []*process{
+		{name: "web", watchPatterns: []string{"**/*.go", "**/*.hml"}},
+		{name: "css", watchPatterns: []string{"**/*.scss"}},
+	}
+	ignore := &ignoreRules{}
+	for b.Loop() {
+		watchDirs(procs, ignore)
 	}
 }
 

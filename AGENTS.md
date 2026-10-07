@@ -56,7 +56,7 @@ visible on one.
 
 - fsnotify names an event under a watch on `.` as `./x` on inotify and
   `x` on kqueue, so a pattern like `*.rb` matched on a Mac and not on a
-  runner. `matchPatterns` cleans the path.
+  runner. `relPath` cleans the path.
 - Reading the master side of a pty returns `EIO` when the child closes
   the slave, which is every process exiting. Linux reports it, macOS does
   not, and procman was printing it as an error.

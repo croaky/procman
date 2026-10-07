@@ -55,6 +55,7 @@ type manager struct {
 
 	// shared file watching
 	fsw         *fsnotify.Watcher
+	watched     []*process // the procs with watch patterns
 	watchDir    string
 	watchStopCh chan struct{}
 	watchOnce   sync.Once
@@ -360,22 +361,18 @@ func (out *output) writeErr(proc *process, err error) {
 
 // setupWatchers creates a single watcher for all processes with watch patterns.
 func (mgr *manager) setupWatchers() {
-	has := false
 	for _, p := range mgr.procs {
 		if len(p.watchPatterns) > 0 {
-			has = true
-			break
+			mgr.watched = append(mgr.watched, p)
 		}
 	}
-	if !has {
+	if len(mgr.watched) == 0 {
 		return
 	}
 
 	fsw, err := fsnotify.NewWatcher()
 	if err != nil {
-		if len(mgr.procs) > 0 {
-			mgr.procs[0].output.writeErr(mgr.procs[0], fmt.Errorf("watch setup: %v", err))
-		}
+		mgr.watchErr(fmt.Errorf("watch setup: %v", err))
 		return
 	}
 	mgr.fsw = fsw
@@ -384,9 +381,42 @@ func (mgr *manager) setupWatchers() {
 	mgr.watchTimers = make(map[*process]*time.Timer)
 
 	start := time.Now()
-	ignore := loadIgnoreRules(".gitignore")
+	dirs := watchDirs(mgr.watched, loadIgnoreRules(".gitignore"))
+	count := 0
+	for d := range dirs {
+		if err := mgr.fsw.Add(d); err != nil {
+			mgr.watchErr(fmt.Errorf("watch %s: %v", d, err))
+			continue
+		}
+		count++
+	}
+	if count == 0 && len(dirs) > 0 {
+		mgr.fsw.Close()
+		mgr.fsw = nil
+		return
+	}
+	first := mgr.procs[0]
+	first.output.writeLine(first, fmt.Appendf(nil,
+		"\033[0;90mwatching %d dirs (setup %v)\033[0m", count, time.Since(start).Round(time.Millisecond)))
+	go mgr.watchLoop()
+}
+
+// watchErr writes a watcher error under the first process.
+// setupWatchers returns before any call when there is no process.
+func (mgr *manager) watchErr(err error) {
+	first := mgr.procs[0]
+	first.output.writeErr(first, err)
+}
+
+// watchDirs returns the directories under the working directory that
+// hold a file a watch pattern of procs can match.
+//
+// The walk from a base directory gives the same directories for every
+// pattern with that base. So watchDirs walks each base one time.
+func watchDirs(procs []*process, ignore *ignoreRules) map[string]bool {
 	dirs := make(map[string]bool)
-	for _, proc := range mgr.procs {
+	walked := make(map[string]bool)
+	for _, proc := range procs {
 		for _, pattern := range proc.watchPatterns {
 			matches, err := doublestar.Glob(os.DirFS("."), pattern)
 			if err != nil {
@@ -399,6 +429,10 @@ func (mgr *manager) setupWatchers() {
 				}
 			}
 			base := nonGlobBaseDir(pattern)
+			if walked[base] {
+				continue
+			}
+			walked[base] = true
 			_ = filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
 				if err != nil {
 					return nil
@@ -413,26 +447,7 @@ func (mgr *manager) setupWatchers() {
 			})
 		}
 	}
-	count := 0
-	for d := range dirs {
-		if err := mgr.fsw.Add(d); err != nil {
-			if len(mgr.procs) > 0 {
-				mgr.procs[0].output.writeErr(mgr.procs[0], fmt.Errorf("watch %s: %v", d, err))
-			}
-			continue
-		}
-		count++
-	}
-	if count == 0 && len(dirs) > 0 {
-		mgr.fsw.Close()
-		mgr.fsw = nil
-		return
-	}
-	if len(mgr.procs) > 0 {
-		mgr.procs[0].output.writeLine(mgr.procs[0], fmt.Appendf(nil,
-			"\033[0;90mwatching %d dirs (setup %v)\033[0m", count, time.Since(start).Round(time.Millisecond)))
-	}
-	go mgr.watchLoop()
+	return dirs
 }
 
 // alwaysSkip are directories pruned whatever .gitignore says, since
@@ -540,7 +555,9 @@ func nonGlobBaseDir(pattern string) string {
 	return filepath.Dir(pattern[:idx])
 }
 
-func (mgr *manager) matchPatterns(patterns []string, path string) bool {
+// relPath gives the path of a file event relative to the watch
+// directory, in the form that the watch patterns match.
+func (mgr *manager) relPath(path string) string {
 	if mgr.watchDir != "" {
 		if rel, err := filepath.Rel(mgr.watchDir, path); err == nil {
 			path = rel
@@ -548,13 +565,16 @@ func (mgr *manager) matchPatterns(patterns []string, path string) bool {
 	}
 	// A watch on "." names its files "./x" under inotify and "x" under
 	// kqueue, and "*.rb" matches only the second.
-	path = filepath.Clean(path)
+	return filepath.Clean(path)
+}
+
+// matchPatterns reports whether a pattern matches rel, a path from
+// relPath.
+func (mgr *manager) matchPatterns(patterns []string, rel string) bool {
 	for _, pattern := range patterns {
-		matched, err := doublestar.Match(pattern, path)
+		matched, err := doublestar.Match(pattern, rel)
 		if err != nil {
-			if len(mgr.procs) > 0 {
-				mgr.procs[0].output.writeErr(mgr.procs[0], fmt.Errorf("pattern %q: %v", pattern, err))
-			}
+			mgr.watchErr(fmt.Errorf("pattern %q: %v", pattern, err))
 			continue
 		}
 		if matched {
@@ -580,11 +600,9 @@ func (mgr *manager) watchLoop() {
 			if event.Op&(fsnotify.Write|fsnotify.Create) == 0 {
 				continue
 			}
-			for _, proc := range mgr.procs {
-				if len(proc.watchPatterns) == 0 {
-					continue
-				}
-				if mgr.matchPatterns(proc.watchPatterns, event.Name) {
+			rel := mgr.relPath(event.Name)
+			for _, proc := range mgr.watched {
+				if mgr.matchPatterns(proc.watchPatterns, rel) {
 					mgr.scheduleRestart(proc)
 				}
 			}
@@ -592,9 +610,7 @@ func (mgr *manager) watchLoop() {
 			if !ok {
 				return
 			}
-			if len(mgr.procs) > 0 {
-				mgr.procs[0].output.writeErr(mgr.procs[0], err)
-			}
+			mgr.watchErr(err)
 		}
 	}
 }
