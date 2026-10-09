@@ -153,7 +153,9 @@ description short and clear:
 ## Changes
 
 Work happens on a sockeye change: `soc checkout` allocates one and
-prints a worktree. After a push, read the checks with `git push && soc
-show --wait` rather than sleeping and then reading. A `soc show` that
-lands before the push is recorded reports the previous commit's checks,
-green, about the wrong code.
+prints a worktree. Push with `soc push --wait`, which waits for the
+checks rather than sleeping and then reading. A `soc show` that lands
+before the push is recorded reports the previous commit's checks, green,
+about the wrong code. If `main` moved ahead, run `soc sync` to rebase the
+change, then `soc push --force`. A plain push after a sync stops and says
+so.
