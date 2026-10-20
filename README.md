@@ -94,12 +94,6 @@ not via a Homebrew package.
 
 ## Developing
 
-Install the pre-push hook once after a clone:
-
-```bash
-git config core.hooksPath bin
-```
-
 `Checkfile` lists the checks CI runs. `AGENTS.md` gives the commands to
 run before a commit, and the commit message rules.
 
