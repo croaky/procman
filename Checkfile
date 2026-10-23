@@ -33,7 +33,7 @@ deadcode: go run golang.org/x/tools/cmd/deadcode@v0.45.0 -h >/dev/null 2>&1; go 
 # only language dprint.json loads a plugin for.
 fmt: dprint check
 
-weekly_govulncheck: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+weekly_govulncheck: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
 # The title a change needs to merge, and the body rules that come
 # with it. sockeye reads this from main at merge.
