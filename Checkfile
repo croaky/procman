@@ -9,11 +9,10 @@ test: go test -trimpath -buildvcs=false -race -cover ./...
 # of its own. -l lists what it would rewrite, and a non-empty list is
 # the failure, since a CI job that rewrote source would have nowhere to
 # put it.
-# tools.mod pins goimports, not go.mod: a tool line in go.mod would
-# raise golang.org/x/sys, which procman links. The runner installs no
-# goimports, so this is also how CI gets one. go tool writes its
-# download lines to stderr, which out= does not read.
-lint: out=$(go tool -modfile=tools.mod goimports -local "$(go list -m)" -l .); if [ -n "$out" ]; then echo "$out"; exit 1; fi; go vet ./...
+# A tool line in go.mod pins goimports, and go.sum holds its checksum.
+# The runner installs no goimports, so this is also how CI gets one. go
+# tool writes its download lines to stderr, which out= does not read.
+lint: out=$(go tool goimports -local "$(go list -m)" -l .); if [ -n "$out" ]; then echo "$out"; exit 1; fi; go vet ./...
 
 # gopls at hint severity is what an editor underlines and nobody
 # reading a diff sees. It exits 0 whether or not it found anything, so
@@ -24,19 +23,19 @@ hints: git ls-files -z '*.go' | xargs -0 gopls check -severity=hint | awk '1; EN
 # procman is a binary, not a library, so nothing outside it calls in and
 # an unreachable function is dead. deadcode exits 0 whatever it found,
 # so awk prints what it read, then fails if it read a line.
-# The first go tool builds deadcode and discards everything it prints,
-# so the "go: downloading" lines of a cold module cache do not count.
-deadcode: go tool -modfile=tools.mod deadcode -h >/dev/null 2>&1; go tool -modfile=tools.mod deadcode -test ./... 2>&1 | awk '1; END { exit (NR > 0) }'
+# go tool -n builds deadcode and prints only its path, so the "go:
+# downloading" lines of a cold module cache do not count.
+deadcode: go tool -n deadcode >/dev/null && go tool deadcode -test ./... 2>&1 | awk '1; END { exit (NR > 0) }'
 
 # dprint holds the Markdown to one width, so a doc edit produces a diff
 # of what changed and not of where the lines now wrap. Markdown is the
 # only language dprint.json loads a plugin for.
 fmt: dprint check
 
-# govulncheck builds from tools.mod and then reads go.mod, so it scans
-# the versions this module ships. It reads the live vulnerability
-# database, so a new advisory fails this check without a commit.
-weekly_govulncheck: go tool -modfile=tools.mod govulncheck ./...
+# A tool line in go.mod pins govulncheck. It reads the live
+# vulnerability database, so a new advisory fails this check without a
+# commit.
+weekly_govulncheck: go tool govulncheck ./...
 
 # The title a change needs to merge, and the body rules that come
 # with it. sockeye reads this from main at merge.

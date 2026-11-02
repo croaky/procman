@@ -67,25 +67,22 @@ test go away.
 
 ## Checks
 
-Pin every tool a check runs. `tools.mod` and `tools.sum` hold the
-version and checksum of each tool. Run a tool as
-`go tool -modfile=tools.mod <name>`. Add or update a tool with
-`go get -modfile=tools.mod -tool <pkg>@<version>`. Do not run
+Pin every tool a check runs. Declare it with
+`go get -tool <pkg>@<version>`, so `go.mod` and `go.sum` hold its
+version and checksum, and run it as `go tool <name>`. Do not run
 `go run pkg@latest` or `go install pkg@latest` in a `Checkfile`, a
 script, or CI. A moving version makes the same commit pass one week
 and fail the next, and it runs new tool code nobody reviewed. A pinned
 tool changes in a change, where the diff shows the update and CI runs
 it.
 
-Keep the tools out of `go.mod`. A `tool` line there adds the tool's
-requirements to the module graph that procman builds with. The tools
-need a newer `golang.org/x/sys` than procman links, so a tool update
-would change the binary. `tools.mod` names this module, but only
-`go tool -modfile=tools.mod` reads it. The tool then reads `go.mod`,
-so `govulncheck` scans the versions this module ships. Do not run
-`go mod tidy -modfile=tools.mod`, because it copies the requirements
-of `go.mod` into `tools.mod`. A module that no module requires, and
-whose requirements no tool raises, puts its `tool` lines in `go.mod`.
+Keep the `tool` lines in `go.mod`, because no module requires procman.
+A `go get -tool` can raise a requirement, and the build then links the
+newer version. Keep the raise only when the tests pass and nothing
+holds the old version on purpose. Otherwise, and in a library, put the
+tools in a `tools.mod` and run them as
+`go tool -modfile=tools.mod <name>`. The hml and uni repos show that
+form.
 
 Pin the tool, not its data. `govulncheck` reads the live vulnerability
 database on every run, so the weekly scan still finds advisories
@@ -95,17 +92,13 @@ The root `Checkfile` is the list, and CI runs it on every push. Run the
 same things before committing:
 
 ```sh
-go tool -modfile=tools.mod goimports -local "$(go list -m)" -w .
+go tool goimports -local "$(go list -m)" -w .
 go vet ./...
 go test -trimpath -buildvcs=false -race -cover ./...
-go tool -modfile=tools.mod deadcode -test ./...
+go tool deadcode -test ./...
 git ls-files -z '*.go' | xargs -0 gopls check -severity=hint
 dprint fmt
-git ls-files -z '*.sh' 'bin/*' | xargs -0 shellcheck
 ```
-
-Install the hook once per clone with `git config core.hooksPath bin`.
-The hook runs the Go checks, and only when the push carries a Go file.
 
 ## Tests
 
