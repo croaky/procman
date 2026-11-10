@@ -187,3 +187,19 @@ before the push is recorded reports the previous commit's checks, green,
 about the wrong code. If `main` moved ahead, run `soc sync` to rebase the
 change, then `soc push --force`. A plain push after a sync stops and says
 so.
+
+## Releases
+
+sockeye is origin and holds no tags. Its merge mirrors `main` to
+GitHub. croaky/laptop installs this command with
+`go install github.com/croaky/procman@main` on each run of
+`laptop.sh`, so a merge reaches the laptop on the next run with no
+other step.
+
+Do not publish a version tag. No module requires this command in
+`go.mod`, so a version names nothing that Go must resolve. A tag also
+changes `@latest`: Go resolves it to the highest tag, not to `main`, so
+one release with no tag leaves `@latest` on an old build. Docs name
+`@main`, never `@latest`.
+<https://dancroak.com/go/checks#my-commands> gives the rule for each
+kind of repo.

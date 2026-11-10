@@ -5,7 +5,7 @@
 Install:
 
 ```bash
-go install github.com/croaky/procman@latest
+go install github.com/croaky/procman@main
 ```
 
 Define your process definitions in `Procfile.dev`. For example:
@@ -101,7 +101,7 @@ run before a commit, and the commit message rules.
 
 Development happens on [sockeye](https://sockeye.sh), a
 self-hosted review and CI server, which holds in progress branches.
-GitHub receives `main` and the tags so `go install` works.
+GitHub receives `main`.
 
 ## License
 
