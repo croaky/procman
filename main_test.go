@@ -376,8 +376,105 @@ func BenchmarkWatchDirs(b *testing.B) {
 		{name: "css", watchPatterns: []string{"**/*.scss"}},
 	}
 	ignore := &ignoreRules{}
+	b.ReportAllocs()
 	for b.Loop() {
 		watchDirs(procs, ignore)
+	}
+}
+
+// benchProcfile is a Procfile.dev of the size a Rails app has.
+const benchProcfile = `clock: bundle exec ruby cmd/clock.rb  # watch: lib/**/*.rb,cmd/clock.rb
+esbuild: bun run buildwatch
+queues: bundle exec ruby cmd/queues.rb  # watch: lib/**/*.rb,cmd/queues.rb
+web: bundle exec ruby cmd/web.rb  # watch: lib/**/*.rb,ui/**/*.haml,cmd/web.rb
+
+css: bun run tailwind --watch
+postgres: postgres -D tmp/db -p 5432
+redis: redis-server --port 6379 --save ""
+mail: mailpit --smtp 127.0.0.1:1025
+worker-high: bundle exec ruby cmd/worker.rb high  # watch: lib/**/*.rb
+worker-low: bundle exec ruby cmd/worker.rb low  # watch: lib/**/*.rb
+`
+
+func BenchmarkParseProcfile(b *testing.B) {
+	b.SetBytes(int64(len(benchProcfile)))
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := parseProcfile(strings.NewReader(benchProcfile)); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkWriteLine measures the path every line of process output
+// takes. It sends os.Stdout to the null device for the run.
+func BenchmarkWriteLine(b *testing.B) {
+	null, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer null.Close()
+	stdout := os.Stdout
+	os.Stdout = null
+	defer func() { os.Stdout = stdout }()
+
+	proc := &process{name: "web", color: 42}
+	out := &output{}
+	out.init([]*process{proc, {name: "worker-high"}})
+	line := []byte(`[67296] - Worker 1 (PID: 67331) booted in 0.9s, phase: 0 GET /assets/app.css 200`)
+	b.SetBytes(int64(len(line)))
+	b.ReportAllocs()
+	for b.Loop() {
+		out.writeLine(proc, line)
+	}
+}
+
+func BenchmarkIgnoreRulesSkip(b *testing.B) {
+	path := filepath.Join(b.TempDir(), ".gitignore")
+	gitignore := "# deps\n/vendor/bundle\nnode_modules/\n\n# build\n/public/assets\n/public/packs\n" +
+		"dist/\ncoverage/\n*.log\n/tmp\n!/tmp/.keep\n/log\n.DS_Store\n/storage\n.env*\n"
+	if err := os.WriteFile(path, []byte(gitignore), 0644); err != nil {
+		b.Fatal(err)
+	}
+	ig := loadIgnoreRules(path)
+	paths := []string{
+		"lib", "lib/models", "lib/models/concerns", "ui/views/admin",
+		"public/assets", "tmp", "vendor/bundle", "cmd",
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		for _, p := range paths {
+			ig.skip(p)
+		}
+	}
+}
+
+// BenchmarkMatchEvent measures the work the watch loop does for each
+// file event: it makes the path relative, then matches each process.
+func BenchmarkMatchEvent(b *testing.B) {
+	defs, err := parseProcfile(strings.NewReader(benchProcfile))
+	if err != nil {
+		b.Fatal(err)
+	}
+	mgr := &manager{watchDir: "/Users/dev/src/app"}
+	for _, d := range defs {
+		if len(d.watchPatterns) > 0 {
+			mgr.watched = append(mgr.watched, &process{name: d.name, watchPatterns: d.watchPatterns})
+		}
+	}
+	events := []string{
+		"/Users/dev/src/app/lib/models/user.rb",
+		"/Users/dev/src/app/ui/views/admin/index.haml",
+		"/Users/dev/src/app/public/assets/app.css",
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		for _, e := range events {
+			rel := mgr.relPath(e)
+			for _, proc := range mgr.watched {
+				mgr.matchPatterns(proc.watchPatterns, rel)
+			}
+		}
 	}
 }
 

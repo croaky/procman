@@ -9,7 +9,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -81,6 +81,7 @@ type output struct {
 	maxNameLength int
 	mutex         sync.Mutex
 	pipes         map[*process]*os.File
+	buf           []byte // line buffer for writeLine; mutex guards it
 }
 
 func main() {
@@ -338,20 +339,26 @@ func (out *output) closePipe(proc *process) {
 }
 
 // writeLine writes a line of output for the specified process, with color formatting.
+//
+// Every line of process output comes here. So it builds the line in
+// out.buf, which it keeps from line to line, and allocates nothing
+// after the first long line.
 func (out *output) writeLine(proc *process, p []byte) {
-	var buf bytes.Buffer
-	fmt.Fprintf(&buf, "\033[1;38;5;%vm", proc.color)
-	buf.WriteString(proc.name)
-	for i := len(proc.name); i <= out.maxNameLength; i++ {
-		buf.WriteByte(' ')
-	}
-	buf.WriteString("\033[0m| ")
-	buf.Write(p)
-	buf.WriteByte('\n')
-
 	out.mutex.Lock()
 	defer out.mutex.Unlock()
-	buf.WriteTo(os.Stdout)
+
+	buf := append(out.buf[:0], "\033[1;38;5;"...)
+	buf = strconv.AppendInt(buf, int64(proc.color), 10)
+	buf = append(buf, 'm')
+	buf = append(buf, proc.name...)
+	for i := len(proc.name); i <= out.maxNameLength; i++ {
+		buf = append(buf, ' ')
+	}
+	buf = append(buf, "\033[0m| "...)
+	buf = append(buf, p...)
+	buf = append(buf, '\n')
+	out.buf = buf
+	os.Stdout.Write(buf)
 }
 
 // writeErr writes an error message for the specified process.
