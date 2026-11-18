@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/creack/pty v1.1.24
-	github.com/croaky/is v0.2.0
+	github.com/croaky/is v0.2.2
 	github.com/fsnotify/fsnotify v1.9.0
 )
 
