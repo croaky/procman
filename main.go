@@ -29,8 +29,11 @@ import (
 )
 
 const (
-	timeout  = 5 * time.Second
-	debounce = 100 * time.Millisecond
+	timeout        = 5 * time.Second
+	debounce       = 100 * time.Millisecond
+	maxIgnoreBytes = 1 << 20
+	maxIgnoreRules = 10000
+	maxIgnoreLine  = 4096
 )
 
 var (
@@ -496,7 +499,16 @@ func (mgr *manager) setupWatchers() {
 	mgr.watchTimers = make(map[*process]*time.Timer)
 
 	start := time.Now()
-	dirs := watchDirs(mgr.watched, loadIgnoreRules(".gitignore"))
+	ignore, err := loadIgnoreRules(".gitignore")
+	if err != nil {
+		mgr.watchErr(err)
+	}
+	dirs := watchDirs(mgr.watched, ignore)
+	if mgr.isShuttingDown() {
+		mgr.fsw.Close()
+		mgr.fsw = nil
+		return
+	}
 	count := 0
 	for d := range dirs {
 		if err := mgr.fsw.Add(d); err != nil {
@@ -529,17 +541,19 @@ func (mgr *manager) watchErr(err error) {
 // The walk from a base directory gives the same directories for every
 // pattern with that base. So watchDirs walks each base one time.
 func watchDirs(procs []*process, ignore *ignoreRules) map[string]bool {
+	rootReal, _ := filepath.EvalSymlinks(".")
 	dirs := make(map[string]bool)
 	walked := make(map[string]bool)
 	for _, proc := range procs {
 		for _, pattern := range proc.watchPatterns {
-			matches, err := doublestar.Glob(os.DirFS("."), pattern)
+			matches, err := doublestar.Glob(os.DirFS("."), pattern, doublestar.WithNoFollow())
 			if err != nil {
 				proc.output.writeErr(proc, fmt.Errorf("glob %q: %v", pattern, err))
 				continue
 			}
 			for _, m := range matches {
-				if dir := filepath.Dir(m); !ignore.skip(dir) {
+				dir := filepath.Dir(m)
+				if !dirs[dir] && !ignore.skip(dir) && insideRoot(rootReal, dir) {
 					dirs[dir] = true
 				}
 			}
@@ -548,6 +562,9 @@ func watchDirs(procs []*process, ignore *ignoreRules) map[string]bool {
 				continue
 			}
 			walked[base] = true
+			if !insideRoot(rootReal, base) {
+				continue
+			}
 			_ = filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
 				if err != nil {
 					return nil
@@ -563,6 +580,22 @@ func watchDirs(procs []*process, ignore *ignoreRules) map[string]bool {
 		}
 	}
 	return dirs
+}
+
+// insideRoot reports whether dir resolves to rootReal or a subdirectory of it.
+func insideRoot(rootReal, dir string) bool {
+	if rootReal == "" {
+		return true
+	}
+	realPath, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(rootReal, realPath)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // alwaysSkip are directories pruned whatever .gitignore says, since
@@ -595,17 +628,35 @@ type ignoreRule struct {
 // loadIgnoreRules reads a .gitignore file. A missing file yields rules
 // that still skip alwaysSkip, so the watcher stays cheap in a directory
 // under no version control at all.
-func loadIgnoreRules(path string) *ignoreRules {
+func loadIgnoreRules(path string) (*ignoreRules, error) {
 	ig := &ignoreRules{}
-	file, err := os.Open(path)
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return ig
+		if errors.Is(err, os.ErrNotExist) {
+			return ig, nil
+		}
+		return ig, fmt.Errorf("ignore %s: %v", path, err)
 	}
 	defer file.Close()
-	scanner := bufio.NewScanner(file)
+
+	info, err := file.Stat()
+	if err != nil {
+		return ig, fmt.Errorf("ignore %s: %v", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return ig, fmt.Errorf("ignore %s: not a regular file", path)
+	}
+
+	lr := &io.LimitedReader{R: file, N: maxIgnoreBytes + 1}
+	scanner := bufio.NewScanner(lr)
+	var limitErr error
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if len(line) > maxIgnoreLine {
+			limitErr = fmt.Errorf("ignore %s: line exceeds %d bytes", path, maxIgnoreLine)
 			continue
 		}
 		r := ignoreRule{}
@@ -617,14 +668,44 @@ func loadIgnoreRules(path string) *ignoreRules {
 			r.anchored = true
 			line = line[1:]
 		}
-		r.pattern = strings.TrimSuffix(line, "/")
+		r.pattern = escapeBraces(strings.TrimSuffix(line, "/"))
 		if r.pattern == "" {
 			continue
 		}
+		if len(ig.rules) >= maxIgnoreRules {
+			return ig, fmt.Errorf("ignore %s: exceeds %d rules", path, maxIgnoreRules)
+		}
 		ig.rules = append(ig.rules, r)
 	}
-	_ = scanner.Err()
-	return ig
+	if err := scanner.Err(); err != nil {
+		return ig, fmt.Errorf("ignore %s: %v", path, err)
+	}
+	if lr.N == 0 {
+		return ig, fmt.Errorf("ignore %s: exceeds %d bytes", path, maxIgnoreBytes)
+	}
+	return ig, limitErr
+}
+
+// escapeBraces escapes { and } so doublestar treats gitignore braces as literal characters.
+func escapeBraces(s string) string {
+	if !strings.ContainsAny(s, "{}") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 4)
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			b.WriteByte(s[i])
+			i++
+			b.WriteByte(s[i])
+			continue
+		}
+		if s[i] == '{' || s[i] == '}' {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 // skip reports whether a directory path should be pruned from the walk.

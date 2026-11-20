@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -436,7 +437,10 @@ func BenchmarkIgnoreRulesSkip(b *testing.B) {
 	if err := os.WriteFile(path, []byte(gitignore), 0644); err != nil {
 		b.Fatal(err)
 	}
-	ig := loadIgnoreRules(path)
+	ig, err := loadIgnoreRules(path)
+	if err != nil {
+		b.Fatal(err)
+	}
 	paths := []string{
 		"lib", "lib/models", "lib/models/concerns", "ui/views/admin",
 		"public/assets", "tmp", "vendor/bundle", "cmd",
@@ -535,7 +539,9 @@ func TestIgnoreRulesSkip(t *testing.T) {
 				is.NoErr(os.WriteFile(path, []byte(tt.gitignore), 0644))
 			}
 
-			is.Eq(loadIgnoreRules(path).skip(tt.path), tt.want)
+			ig, err := loadIgnoreRules(path)
+			is.NoErr(err)
+			is.Eq(ig.skip(tt.path), tt.want)
 		})
 	}
 }
@@ -769,4 +775,63 @@ func TestRunProcessReturnsStartError(t *testing.T) {
 	proc.mu.Lock()
 	is.True(proc.cmd == nil)
 	proc.mu.Unlock()
+}
+
+func TestWatchDirsSkipsSymlinks(t *testing.T) {
+	is := is.New(t)
+
+	outside := t.TempDir()
+	is.NoErr(os.WriteFile(filepath.Join(outside, "out.go"), nil, 0644))
+
+	root := t.TempDir()
+	t.Chdir(root)
+	is.NoErr(os.MkdirAll("sub", 0755))
+	is.NoErr(os.WriteFile(filepath.Join("sub", "a.go"), nil, 0644))
+	// Symlink cycles and links outside the project must not be followed.
+	is.NoErr(os.Symlink("..", filepath.Join("sub", "loop1")))
+	is.NoErr(os.Symlink("..", filepath.Join("sub", "loop2")))
+	is.NoErr(os.Symlink(outside, "ext"))
+
+	procs := []*process{
+		{name: "web", watchPatterns: []string{"**/*.go", "ext/*.go"}},
+	}
+	got := watchDirs(procs, &ignoreRules{})
+
+	want := map[string]bool{".": true, "sub": true}
+	is.Eq(got, want)
+}
+
+func TestIgnoreRulesLiteralBraces(t *testing.T) {
+	is := is.New(t)
+
+	path := filepath.Join(t.TempDir(), ".gitignore")
+	manyBraces := strings.Repeat("{a,b}", 30)
+	is.NoErr(os.WriteFile(path, []byte(manyBraces+"\n{x,y}\n"), 0644))
+
+	ig, err := loadIgnoreRules(path)
+	is.NoErr(err)
+
+	is.Eq(ig.skip("x"), false)
+	is.Eq(ig.skip("{x,y}"), true)
+	is.Eq(ig.skip(strings.Repeat("a", 30)), false)
+	is.Eq(ig.skip(manyBraces), true)
+}
+
+func TestLoadIgnoreRulesRejectsNonRegular(t *testing.T) {
+	is := is.New(t)
+
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo")
+	is.NoErr(syscall.Mkfifo(fifo, 0600))
+
+	ig, err := loadIgnoreRules(fifo)
+	is.HasErr(err)
+	is.Eq(ig.skip(".git"), true)
+
+	devLink := filepath.Join(dir, "devlink")
+	is.NoErr(os.Symlink("/dev/zero", devLink))
+
+	ig, err = loadIgnoreRules(devLink)
+	is.HasErr(err)
+	is.Eq(ig.skip("node_modules"), true)
 }
