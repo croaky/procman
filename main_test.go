@@ -631,3 +631,142 @@ func TestRestartOnFileChange(t *testing.T) {
 		t.Fatalf("timeout waiting for restart; procman said:\n%s", seen())
 	}
 }
+
+func TestRestartSingleWatchedProcess(t *testing.T) {
+	is := is.New(t)
+
+	out := &output{}
+	proc := &process{
+		name:          "web",
+		cmdStr:        "sleep 30",
+		color:         2,
+		output:        out,
+		watchPatterns: []string{"*.rb"},
+	}
+	mgr := &manager{output: out, procs: []*process{proc}}
+	out.init(mgr.procs)
+	mgr.setupSignalHandling()
+	go mgr.waitForExit()
+
+	is.NoErr(mgr.runProcess(proc))
+	proc.mu.Lock()
+	firstPID := proc.cmd.Process.Pid
+	proc.mu.Unlock()
+
+	mgr.restart(proc)
+
+	// allDone stays open because the replacement process is running.
+	select {
+	case <-mgr.allDone:
+		t.Fatal("allDone closed during single-process restart")
+	default:
+	}
+
+	proc.mu.Lock()
+	is.NotNil(proc.cmd)
+	secondPID := proc.cmd.Process.Pid
+	proc.mu.Unlock()
+	is.True(secondPID != firstPID)
+
+	mgr.triggerDone()
+	mgr.wait()
+}
+
+func TestRestartAbortsOnShutdown(t *testing.T) {
+	is := is.New(t)
+
+	out := &output{}
+	proc := &process{
+		name:          "web",
+		cmdStr:        "sleep 30",
+		color:         2,
+		output:        out,
+		watchPatterns: []string{"*.rb"},
+	}
+	mgr := &manager{output: out, procs: []*process{proc}}
+	out.init(mgr.procs)
+	mgr.setupSignalHandling()
+	go mgr.waitForExit()
+
+	is.NoErr(mgr.runProcess(proc))
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		mgr.restart(proc)
+	})
+	mgr.triggerDone()
+
+	wg.Wait()
+	mgr.wait()
+
+	proc.mu.Lock()
+	cmd := proc.cmd
+	proc.mu.Unlock()
+	is.True(cmd == nil)
+}
+
+func TestSignalSkipsReapedProcess(t *testing.T) {
+	is := is.New(t)
+
+	out := &output{}
+	proc := &process{
+		name:          "web",
+		cmdStr:        "true",
+		color:         2,
+		output:        out,
+		watchPatterns: []string{"*.rb"},
+	}
+	mgr := &manager{output: out, procs: []*process{proc}}
+	out.init(mgr.procs)
+	mgr.setupSignalHandling()
+
+	is.NoErr(mgr.runProcess(proc))
+	proc.mu.Lock()
+	cmdDone := proc.cmdDone
+	proc.mu.Unlock()
+	<-cmdDone
+
+	proc.mu.Lock()
+	is.True(proc.cmd == nil)
+	proc.mu.Unlock()
+
+	// Signaling a reaped process produces no error output.
+	originalStdout := os.Stdout
+	r, w, err := os.Pipe()
+	is.NoErr(err)
+	os.Stdout = w
+
+	proc.interrupt()
+	proc.kill()
+
+	w.Close()
+	os.Stdout = originalStdout
+
+	var buf bytes.Buffer
+	_, err = buf.ReadFrom(r)
+	is.NoErr(err)
+	is.Eq(buf.String(), "")
+
+	mgr.wait()
+}
+
+func TestRunProcessReturnsStartError(t *testing.T) {
+	is := is.New(t)
+
+	out := &output{}
+	proc := &process{
+		name:   "bad",
+		cmdStr: "echo \x00",
+		color:  2,
+		output: out,
+	}
+	mgr := &manager{output: out, procs: []*process{proc}}
+	out.init(mgr.procs)
+	mgr.setupSignalHandling()
+
+	err := mgr.runProcess(proc)
+	is.HasErr(err)
+	proc.mu.Lock()
+	is.True(proc.cmd == nil)
+	proc.mu.Unlock()
+}

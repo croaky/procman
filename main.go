@@ -47,11 +47,14 @@ type procDef struct {
 
 // manager handles overall process management
 type manager struct {
-	output      *output
-	procs       []*process
-	procWg      sync.WaitGroup
-	done        chan struct{}
-	interrupted chan os.Signal
+	output       *output
+	procs        []*process
+	mu           sync.Mutex
+	active       int
+	allDone      chan struct{}
+	shuttingDown bool
+	done         chan struct{}
+	interrupted  chan os.Signal
 
 	// shared file watching
 	fsw         *fsnotify.Watcher
@@ -71,9 +74,10 @@ type process struct {
 	output        *output
 	watchPatterns []string
 
-	mu      sync.Mutex
-	cmd     *exec.Cmd
-	cmdDone chan struct{} // closed when cmd.Wait() returns
+	restartMu sync.Mutex // serializes restarts for this process
+	mu        sync.Mutex // guards cmd and cmdDone
+	cmd       *exec.Cmd
+	cmdDone   chan struct{} // closed when cmd.Wait() returns
 }
 
 // output manages the output display of processes
@@ -106,14 +110,30 @@ func main() {
 
 	mgr.setupSignalHandling()
 
+	go mgr.waitForExit()
+
+	// Hold one active slot until the start loop finishes so an early
+	// exit does not close allDone before later processes start.
+	mgr.addActive()
+	startFailed := false
 	for _, proc := range mgr.procs {
-		mgr.runProcess(proc)
+		if err := mgr.runProcess(proc); err != nil {
+			proc.output.writeErr(proc, fmt.Errorf("start: %v", err))
+			startFailed = true
+			mgr.triggerDone()
+			break
+		}
+	}
+	mgr.releaseActive()
+
+	if !startFailed {
+		mgr.setupWatchers()
 	}
 
-	mgr.setupWatchers()
-
-	go mgr.waitForExit()
-	mgr.procWg.Wait()
+	mgr.wait()
+	if startFailed {
+		os.Exit(1)
+	}
 }
 
 // parseArgs parses command-line arguments and returns a list of process names.
@@ -228,30 +248,116 @@ func (mgr *manager) setupSignalHandling() {
 	signal.Notify(mgr.interrupted, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 }
 
-// runProcess creates a new command, starts it, and waits for it in a goroutine.
-func (mgr *manager) runProcess(proc *process) {
-	proc.cmd = exec.Command("/bin/sh", "-c", proc.cmdStr)
-	proc.cmdDone = make(chan struct{})
-
-	proc.output.pipeOutput(proc)
-
-	mgr.procWg.Go(func() {
-		proc.cmd.Wait()
-		proc.output.closePipe(proc)
-		close(proc.cmdDone)
-		// Only signal done for unwatched processes
-		if len(proc.watchPatterns) == 0 {
-			mgr.done <- struct{}{}
-		}
-	})
+// addActive increments the count of running processes and restarts.
+func (mgr *manager) addActive() {
+	mgr.mu.Lock()
+	if mgr.allDone == nil {
+		mgr.allDone = make(chan struct{})
+	}
+	mgr.active++
+	mgr.mu.Unlock()
 }
 
-// waitForExit waits for all processes to exit or for an interruption signal.
+// releaseActive decrements the active count and closes allDone at zero.
+func (mgr *manager) releaseActive() {
+	mgr.mu.Lock()
+	mgr.active--
+	if mgr.active == 0 && mgr.allDone != nil {
+		close(mgr.allDone)
+	}
+	mgr.mu.Unlock()
+}
+
+// wait blocks until all active processes and restarts finish.
+func (mgr *manager) wait() {
+	mgr.mu.Lock()
+	if mgr.active == 0 {
+		mgr.mu.Unlock()
+		return
+	}
+	ch := mgr.allDone
+	mgr.mu.Unlock()
+	<-ch
+}
+
+// triggerDone signals waitForExit without blocking.
+func (mgr *manager) triggerDone() {
+	select {
+	case mgr.done <- struct{}{}:
+	default:
+	}
+}
+
+// isShuttingDown reports whether shutdown has started.
+func (mgr *manager) isShuttingDown() bool {
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	return mgr.shuttingDown
+}
+
+// runProcess starts proc under a pty and waits for it in a goroutine.
+func (mgr *manager) runProcess(proc *process) error {
+	if mgr.isShuttingDown() {
+		return nil
+	}
+
+	cmd := exec.Command("/bin/sh", "-c", proc.cmdStr)
+	ptyFile, err := pty.Start(cmd)
+	if err != nil {
+		return err
+	}
+
+	cmdDone := make(chan struct{})
+	mgr.mu.Lock()
+	if mgr.shuttingDown {
+		mgr.mu.Unlock()
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = cmd.Wait()
+		_ = ptyFile.Close()
+		return nil
+	}
+	if mgr.allDone == nil {
+		mgr.allDone = make(chan struct{})
+	}
+	mgr.active++
+	proc.mu.Lock()
+	proc.cmd = cmd
+	proc.cmdDone = cmdDone
+	proc.mu.Unlock()
+	mgr.mu.Unlock()
+
+	proc.output.pipeOutput(proc, ptyFile)
+
+	go func() {
+		_ = cmd.Wait()
+		proc.mu.Lock()
+		if proc.cmd == cmd {
+			proc.cmd = nil
+		}
+		proc.mu.Unlock()
+		proc.output.closePipe(proc, ptyFile)
+		close(cmdDone)
+		// Only signal done for unwatched processes.
+		if len(proc.watchPatterns) == 0 {
+			mgr.triggerDone()
+		}
+		mgr.releaseActive()
+	}()
+	return nil
+}
+
+// waitForExit waits for a process exit or signal, then stops all processes.
 func (mgr *manager) waitForExit() {
+	defer signal.Stop(mgr.interrupted)
+
 	select {
 	case <-mgr.done:
 	case <-mgr.interrupted:
 	}
+
+	mgr.mu.Lock()
+	mgr.shuttingDown = true
+	mgr.mu.Unlock()
 
 	mgr.stopWatcher()
 
@@ -269,23 +375,30 @@ func (mgr *manager) waitForExit() {
 	}
 }
 
-// interrupt sends an interrupt signal to a running process.
+// interrupt sends SIGINT to a running process group.
 func (proc *process) interrupt() {
-	if proc.cmd != nil && proc.cmd.Process != nil {
-		proc.signal(syscall.SIGINT)
-	}
+	proc.signal(syscall.SIGINT)
 }
 
-// kill forcefully stops a running process.
+// kill sends SIGKILL to a running process group.
 func (proc *process) kill() {
-	if proc.cmd != nil && proc.cmd.Process != nil {
-		proc.signal(syscall.SIGKILL)
-	}
+	proc.signal(syscall.SIGKILL)
 }
 
-// signal sends a specified signal to the process group.
+// signal sends sig to the process group if the child is still running.
 func (proc *process) signal(sig syscall.Signal) {
-	if err := syscall.Kill(-proc.cmd.Process.Pid, sig); err != nil {
+	proc.mu.Lock()
+	var pid int
+	if proc.cmd != nil && proc.cmd.Process != nil {
+		pid = proc.cmd.Process.Pid
+	}
+	if pid == 0 {
+		proc.mu.Unlock()
+		return
+	}
+	err := syscall.Kill(-pid, sig)
+	proc.mu.Unlock()
+	if err != nil && !errors.Is(err, syscall.ESRCH) {
 		proc.output.writeErr(proc, err)
 	}
 }
@@ -300,14 +413,8 @@ func (out *output) init(procs []*process) {
 	}
 }
 
-// pipeOutput handles the output piping for a process.
-func (out *output) pipeOutput(proc *process) {
-	ptyFile, err := pty.Start(proc.cmd)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening PTY: %v\n", err)
-		os.Exit(1)
-	}
-
+// pipeOutput reads lines from ptyFile and writes them with a prefix.
+func (out *output) pipeOutput(proc *process, ptyFile *os.File) {
 	out.mutex.Lock()
 	out.pipes[proc] = ptyFile
 	out.mutex.Unlock()
@@ -326,11 +433,12 @@ func (out *output) pipeOutput(proc *process) {
 	}()
 }
 
-// closePipe closes the pseudo-terminal associated with the process.
-func (out *output) closePipe(proc *process) {
+// closePipe closes ptyFile and removes it from out.pipes.
+func (out *output) closePipe(proc *process, ptyFile *os.File) {
 	out.mutex.Lock()
-	ptyFile := out.pipes[proc]
-	delete(out.pipes, proc)
+	if out.pipes[proc] == ptyFile {
+		delete(out.pipes, proc)
+	}
 	out.mutex.Unlock()
 
 	if ptyFile != nil {
@@ -623,18 +731,25 @@ func (mgr *manager) watchLoop() {
 }
 
 func (mgr *manager) scheduleRestart(proc *process) {
+	if mgr.isShuttingDown() {
+		return
+	}
 	mgr.watchMu.Lock()
 	defer mgr.watchMu.Unlock()
 
 	if t := mgr.watchTimers[proc]; t != nil {
 		t.Stop()
 	}
-	mgr.watchTimers[proc] = time.AfterFunc(debounce, func() {
+	var timer *time.Timer
+	timer = time.AfterFunc(debounce, func() {
 		mgr.restart(proc)
 		mgr.watchMu.Lock()
-		delete(mgr.watchTimers, proc)
+		if mgr.watchTimers[proc] == timer {
+			delete(mgr.watchTimers, proc)
+		}
 		mgr.watchMu.Unlock()
 	})
+	mgr.watchTimers[proc] = timer
 }
 
 func (mgr *manager) stopAllTimers() {
@@ -655,20 +770,37 @@ func (mgr *manager) stopWatcher() {
 }
 
 func (mgr *manager) restart(p *process) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.restartMu.Lock()
+	defer p.restartMu.Unlock()
+
+	mgr.mu.Lock()
+	if mgr.shuttingDown || mgr.active == 0 {
+		mgr.mu.Unlock()
+		return
+	}
+	mgr.active++
+	mgr.mu.Unlock()
+	defer mgr.releaseActive()
 
 	p.output.writeLine(p, []byte("\033[0;33mrestarting...\033[0m"))
 
+	p.mu.Lock()
+	cmdDone := p.cmdDone
+	p.mu.Unlock()
+
 	p.interrupt()
 
-	// Wait for process to exit
-	select {
-	case <-p.cmdDone:
-	case <-time.After(timeout):
-		p.kill()
-		<-p.cmdDone
+	// Wait for the old process to exit.
+	if cmdDone != nil {
+		select {
+		case <-cmdDone:
+		case <-time.After(timeout):
+			p.kill()
+			<-cmdDone
+		}
 	}
 
-	mgr.runProcess(p)
+	if err := mgr.runProcess(p); err != nil {
+		p.output.writeErr(p, fmt.Errorf("restart: %v", err))
+	}
 }
